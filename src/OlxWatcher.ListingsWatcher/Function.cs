@@ -8,6 +8,8 @@ using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.CloudWatchEvents;
 using Amazon.Lambda.Core;
 using OlxWatcher.Shared;
+using OlxWatcher.Shared.DynamoDb;
+using OlxWatcher.Shared.Dtos;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -45,7 +47,7 @@ public sealed class Function
 
             foreach (var item in page.Items)
             {
-                var product = WatchedProduct.FromItem(item);
+                var product = WatchedProductDynamoMapper.ToWatchedProduct(item);
                 if (product is null)
                 {
                     logger.LogInformation("Skipping a DynamoDB item without a chat ID or product URL.");
@@ -70,7 +72,7 @@ public sealed class Function
         logger.LogInformation($"Completed scheduled listing check. Processed {processed} watched products.");
     }
 
-    private async Task CheckProductAsync(WatchedProduct product, ILambdaLogger logger)
+    private async Task CheckProductAsync(WatchedProductDto product, ILambdaLogger logger)
     {
         logger.LogInformation($"Checking watched product for Telegram chat {product.ChatId}.");
         var actual = await GetProductDetailsAsync(product.ProductUrl, logger);
@@ -130,7 +132,7 @@ public sealed class Function
         return null;
     }
 
-    private async Task UpdateProductAsync(WatchedProduct product, ProductDetails actual, ILambdaLogger logger)
+    private async Task UpdateProductAsync(WatchedProductDto product, ProductDetails actual, ILambdaLogger logger)
     {
         var assignments = new List<string>
         {
@@ -158,7 +160,7 @@ public sealed class Function
         await _dynamoDb.UpdateItemAsync(new UpdateItemRequest
         {
             TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-            Key = product.Key,
+            Key = WatchedProductDynamoMapper.CreateKey(product),
             UpdateExpression = $"SET {string.Join(", ", assignments)}",
             ExpressionAttributeValues = values
         });
@@ -167,7 +169,7 @@ public sealed class Function
     }
 
     private static async Task SendProductChangeAsync(
-        WatchedProduct product,
+        WatchedProductDto product,
         ProductDetails actual,
         bool nameChanged,
         bool priceChanged,
@@ -364,39 +366,4 @@ public sealed class Function
 
     private sealed record ProductDetails(string? Name, string? Price, string? Currency);
 
-    private sealed record WatchedProduct(
-        string ChatId,
-        string ProductUrl,
-        string? ProductName,
-        string? ProductPrice)
-    {
-        public Dictionary<string, AttributeValue> Key => new()
-        {
-            ["chatId"] = new() { S = ChatId },
-            ["productUrl"] = new() { S = ProductUrl }
-        };
-
-        public static WatchedProduct? FromItem(IReadOnlyDictionary<string, AttributeValue> item)
-        {
-            var chatId = GetString(item, "chatId");
-            var productUrl = GetString(item, "productUrl");
-            return chatId is null || productUrl is null
-                ? null
-                : new WatchedProduct(
-                    chatId,
-                    productUrl,
-                    GetString(item, "productName"),
-                    GetString(item, "productPrice"));
-        }
-
-        private static string? GetString(IReadOnlyDictionary<string, AttributeValue> item, string attributeName)
-        {
-            if (!item.TryGetValue(attributeName, out var value) || value is null || value.NULL == true)
-            {
-                return null;
-            }
-
-            return value.S;
-        }
-    }
 }

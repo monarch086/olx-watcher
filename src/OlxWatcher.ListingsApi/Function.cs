@@ -8,6 +8,8 @@ using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using OlxWatcher.ListingsApi.Dtos;
 using OlxWatcher.Shared;
+using OlxWatcher.Shared.DynamoDb;
+using OlxWatcher.Shared.Dtos;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -119,7 +121,7 @@ public sealed class Function
 
     private async Task<string> ListAsync(string chatId, ILambdaLogger logger)
     {
-        var products = new List<WatchedProduct>();
+        var products = new List<WatchedProductDto>();
         Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
 
         do
@@ -136,8 +138,8 @@ public sealed class Function
             });
 
             products.AddRange(response.Items
-                .Select(WatchedProduct.FromItem)
-                .Where(product => product is not null)!);
+                .Select(WatchedProductDynamoMapper.ToWatchedProduct)
+                .OfType<WatchedProductDto>());
             lastEvaluatedKey = response.LastEvaluatedKey;
         }
         while (lastEvaluatedKey is { Count: > 0 });
@@ -152,14 +154,14 @@ public sealed class Function
         return FormatWatchedProducts(products);
     }
 
-    private static string FormatWatchedProducts(IReadOnlyList<WatchedProduct> products)
+    private static string FormatWatchedProducts(IReadOnlyList<WatchedProductDto> products)
     {
         var responseText = "Відстежувані товари:\n" + string.Join(
             "\n\n",
             products.Select((product, index) =>
-                $"{index + 1}. {product.Name ?? "Без назви"}\n"
-                + $"Ціна: {(product.Price is null ? "не вказано" : PriceFormatter.FormatUah(product.Price))}\n"
-                + product.Url));
+                $"{index + 1}. {product.ProductName ?? "Без назви"}\n"
+                + $"Ціна: {(product.ProductPrice is null ? "не вказано" : PriceFormatter.FormatUah(product.ProductPrice))}\n"
+                + product.ProductUrl));
         return responseText.Length <= 4096 ? responseText : responseText[..4093] + "...";
     }
 
@@ -222,26 +224,5 @@ public sealed class Function
     {
         StatusCode = (int)statusCode
     };
-
-    private sealed record WatchedProduct(string Url, string? Name, string? Price)
-    {
-        public static WatchedProduct? FromItem(IReadOnlyDictionary<string, AttributeValue> item)
-        {
-            var url = GetString(item, "productUrl");
-            return url is null
-                ? null
-                : new WatchedProduct(url, GetString(item, "productName"), GetString(item, "productPrice"));
-        }
-
-        private static string? GetString(IReadOnlyDictionary<string, AttributeValue> item, string attributeName)
-        {
-            if (!item.TryGetValue(attributeName, out var value) || value is null || value.NULL == true)
-            {
-                return null;
-            }
-
-            return value.S;
-        }
-    }
 
 }
