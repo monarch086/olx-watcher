@@ -19,6 +19,7 @@ namespace OlxWatcher.ListingsApi;
 public sealed class Function
 {
     private const string HelpMessage = "Надішліть /watch і URL товару з OLX або ID оголошення, щоб почати відстеження. Також можна просто надіслати URL або ID. Використовуйте /list, щоб переглянути товари.";
+    private const int MaxActiveProductsPerUser = 20;
     private static readonly HttpClient TelegramClient = new();
     private static readonly HttpClient OlxPageClient = CreateOlxPageClient();
     private readonly IAmazonDynamoDB _dynamoDb;
@@ -117,6 +118,12 @@ public sealed class Function
             return "Ви вже відстежуєте це оголошення.";
         }
 
+        if (await GetActiveProductCountAsync(chatId) >= MaxActiveProductsPerUser)
+        {
+            logger.LogInformation($"Telegram chat {chatId} has reached the active watched-products limit.");
+            return $"Ви можете відстежувати не більше {MaxActiveProductsPerUser} активних оголошень.";
+        }
+
         try
         {
             await _dynamoDb.PutItemAsync(new PutItemRequest
@@ -176,6 +183,34 @@ public sealed class Function
         while (lastEvaluatedKey is { Count: > 0 });
 
         return false;
+    }
+
+    private async Task<int> GetActiveProductCountAsync(string chatId)
+    {
+        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
+        var count = 0;
+        do
+        {
+            var response = await _dynamoDb.QueryAsync(new QueryRequest
+            {
+                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+                KeyConditionExpression = "chatId = :chatId",
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                {
+                    [":chatId"] = new() { S = chatId }
+                },
+                ExclusiveStartKey = lastEvaluatedKey
+            });
+
+            count += response.Items
+                .Select(WatchedProductDynamoMapper.ToWatchedProduct)
+                .OfType<WatchedProductDto>()
+                .Count(product => product.IsActive is not false);
+            lastEvaluatedKey = response.LastEvaluatedKey;
+        }
+        while (lastEvaluatedKey is { Count: > 0 });
+
+        return count;
     }
 
     private async Task<string> ListAsync(string chatId, ILambdaLogger logger)
