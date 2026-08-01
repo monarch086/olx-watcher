@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -16,6 +18,7 @@ public sealed class Function
     private static readonly Regex ScriptRegex = new(
         "<script\\b(?<attributes>[^>]*)>(?<content>.*?)</script>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
+    private static readonly Uri NbuUsdRateUri = new("https://bank.gov.ua/NBUStatService/v1/statdirectory/exchangenew?json&valcode=USD");
     private readonly IAmazonDynamoDB _dynamoDb;
 
     public Function() : this(new AmazonDynamoDBClient())
@@ -172,24 +175,91 @@ public sealed class Function
         var changes = new List<string>();
         if (nameChanged)
         {
-            changes.Add($"Name: {product.ProductName} → {actual.Name}");
+            changes.Add($"Name: {WebUtility.HtmlEncode(product.ProductName)} → {WebUtility.HtmlEncode(actual.Name)}");
         }
 
         if (priceChanged)
         {
-            changes.Add($"Price: {product.ProductPrice} → {actual.Price}");
+            var oldPrice = await FormatPriceAsync(product.ProductPrice, actual.Currency, logger);
+            var newPrice = await FormatPriceAsync(actual.Price, actual.Currency, logger);
+            changes.Add($"Price: {oldPrice} → {newPrice}");
         }
 
+        var productName = actual.Name ?? product.ProductName ?? "OLX product";
         var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
         using var response = await HttpClient.PostAsJsonAsync(
             $"https://api.telegram.org/bot{token}/sendMessage",
             new
             {
                 chat_id = product.ChatId,
-                text = $"OLX product updated:\n{string.Join('\n', changes)}\n{product.ProductUrl}"
+                text = $"<b>{WebUtility.HtmlEncode(productName)}</b>\n{string.Join('\n', changes)}\n{WebUtility.HtmlEncode(product.ProductUrl)}",
+                parse_mode = "HTML",
+                disable_web_page_preview = true
             });
         logger.LogInformation($"Telegram product-change notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
         response.EnsureSuccessStatusCode();
+    }
+
+    private static async Task<string> FormatPriceAsync(string? price, string? currency, ILambdaLogger logger)
+    {
+        if (string.IsNullOrWhiteSpace(price))
+        {
+            return "unknown";
+        }
+
+        if (!TryParsePrice(price, out var value))
+        {
+            return WebUtility.HtmlEncode(price);
+        }
+
+        var formatted = value.ToString("N2", CultureInfo.GetCultureInfo("uk-UA"));
+        var currencyCode = string.IsNullOrWhiteSpace(currency) ? "UAH" : currency.ToUpperInvariant();
+
+        if (currencyCode == "USD")
+        {
+            return $"{formatted} USD";
+        }
+
+        if (currencyCode != "UAH")
+        {
+            return $"{formatted} {WebUtility.HtmlEncode(currencyCode)}";
+        }
+
+        try
+        {
+            var usdValue = await ConvertUahToUsdAsync(value, logger);
+            return usdValue is null
+                ? $"{formatted} UAH"
+                : $"{formatted} UAH (≈ ${usdValue.Value.ToString("N2", CultureInfo.InvariantCulture)})";
+        }
+        catch (Exception exception)
+        {
+            logger.LogInformation($"Could not retrieve an exchange rate for {currencyCode}: {exception.Message}");
+            return $"{formatted} {WebUtility.HtmlEncode(currencyCode)}";
+        }
+    }
+
+    private static bool TryParsePrice(string price, out decimal value) =>
+        decimal.TryParse(price, NumberStyles.Number, CultureInfo.InvariantCulture, out value)
+        || decimal.TryParse(price, NumberStyles.Number, CultureInfo.GetCultureInfo("pl-PL"), out value);
+
+    private static async Task<decimal?> ConvertUahToUsdAsync(decimal amount, ILambdaLogger logger)
+    {
+        using var response = await HttpClient.GetAsync(NbuUsdRateUri);
+        logger.LogInformation($"NBU exchange-rate request returned HTTP {(int)response.StatusCode}.");
+        response.EnsureSuccessStatusCode();
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var rate = document.RootElement.EnumerateArray().FirstOrDefault();
+        if (rate.ValueKind != JsonValueKind.Object
+            || !rate.TryGetProperty("rate", out var rateValue)
+            || !rateValue.TryGetDecimal(out var uahPerUsd)
+            || uahPerUsd <= 0)
+        {
+            return null;
+        }
+
+        return amount / uahPerUsd;
     }
 
     private static ProductDetails? FindProduct(JsonElement element)
@@ -248,15 +318,15 @@ public sealed class Function
     private static ProductDetails? CreateProductDetails(JsonElement product)
     {
         var name = GetJsonString(product, "name");
-        var price = TryGetPrice(product);
-        return name is null && price is null ? null : new ProductDetails(name, price);
+        var (price, currency) = TryGetOffer(product);
+        return name is null && price is null ? null : new ProductDetails(name, price, currency);
     }
 
-    private static string? TryGetPrice(JsonElement product)
+    private static (string? Price, string? Currency) TryGetOffer(JsonElement product)
     {
         if (!product.TryGetProperty("offers", out var offers))
         {
-            return null;
+            return (null, null);
         }
 
         if (offers.ValueKind == JsonValueKind.Array)
@@ -264,7 +334,9 @@ public sealed class Function
             offers = offers.EnumerateArray().FirstOrDefault();
         }
 
-        return offers.ValueKind == JsonValueKind.Object ? GetJsonString(offers, "price") : null;
+        return offers.ValueKind == JsonValueKind.Object
+            ? (GetJsonString(offers, "price"), GetJsonString(offers, "priceCurrency"))
+            : (null, null);
     }
 
     private static string? GetJsonString(JsonElement element, string propertyName)
@@ -293,7 +365,7 @@ public sealed class Function
         Environment.GetEnvironmentVariable(name)
         ?? throw new InvalidOperationException($"Required environment variable {name} is not set.");
 
-    private sealed record ProductDetails(string? Name, string? Price);
+    private sealed record ProductDetails(string? Name, string? Price, string? Currency);
 
     private sealed record WatchedProduct(
         string ChatId,
