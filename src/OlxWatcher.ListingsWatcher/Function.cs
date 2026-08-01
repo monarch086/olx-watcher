@@ -36,50 +36,65 @@ public sealed class Function
             logger.LogInformation($"Starting scheduled listing check at {DateTimeOffset.UtcNow:O}.");
 
             Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
-            var processed = 0;
-            var maxConcurrency = GetMaxCheckConcurrency();
-            logger.LogInformation($"Checking watched products with a maximum concurrency of {maxConcurrency}.");
+            var watchedProducts = new List<WatchedProductDto>();
+            var tableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE");
             do
             {
                 var page = await _dynamoDb.ScanAsync(new ScanRequest
                 {
-                    TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+                    TableName = tableName,
                     ExclusiveStartKey = lastEvaluatedKey
                 });
 
-                await Parallel.ForEachAsync(
-                    page.Items,
-                    new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency },
-                    async (item, _) =>
+                foreach (var item in page.Items)
+                {
+                    var product = WatchedProductDynamoMapper.ToWatchedProduct(item);
+                    if (product is null)
                     {
-                        var product = WatchedProductDynamoMapper.ToWatchedProduct(item);
-                        if (product is null)
-                        {
-                            logger.LogInformation("Skipping a DynamoDB item without a chat ID or product URL.");
-                            return;
-                        }
+                        logger.LogInformation("Skipping a DynamoDB item without a chat ID or product URL.");
+                        continue;
+                    }
 
-                        if (!ShouldCheckProduct(product, logger))
-                        {
-                            return;
-                        }
-
-                        try
-                        {
-                            await CheckProductAsync(product, logger);
-                            Interlocked.Increment(ref processed);
-                        }
-                        catch (Exception exception)
-                        {
-                            const string errorContext = "Перевірка оголошення";
-                            logger.LogError(exception, $"Unable to check watched product for chat {product.ChatId}.");
-                            await SendErrorNotificationAsync($"{errorContext}, чат {product.ChatId}", exception, logger);
-                        }
-                    });
+                    watchedProducts.Add(product);
+                }
 
                 lastEvaluatedKey = page.LastEvaluatedKey;
             }
             while (lastEvaluatedKey is { Count: > 0 });
+
+            var productGroups = watchedProducts
+                .GroupBy(product => string.IsNullOrWhiteSpace(product.ProductId)
+                    ? $"url:{product.ProductUrl}"
+                    : $"id:{product.ProductId}", StringComparer.Ordinal)
+                .Select(group => group.ToList())
+                .ToList();
+            logger.LogInformation($"Loaded {watchedProducts.Count} watched products in {productGroups.Count} distinct product groups.");
+
+            var processed = 0;
+            var maxConcurrency = GetMaxCheckConcurrency();
+            logger.LogInformation($"Checking product groups with a maximum concurrency of {maxConcurrency}.");
+            await Parallel.ForEachAsync(
+                productGroups,
+                new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency },
+                async (group, _) =>
+                {
+                    if (!group.Any(product => ShouldCheckProduct(product, logger)))
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        await CheckProductGroupAsync(group, logger);
+                        Interlocked.Add(ref processed, group.Count);
+                    }
+                    catch (Exception exception)
+                    {
+                        var productId = group[0].ProductId ?? group[0].ProductUrl;
+                        logger.LogError(exception, $"Unable to check watched product group {productId}.");
+                        await SendErrorNotificationAsync($"Перевірка оголошення {productId}", exception, logger);
+                    }
+                });
 
             logger.LogInformation($"Completed scheduled listing check. Processed {processed} watched products.");
         }
@@ -117,40 +132,44 @@ public sealed class Function
             : defaultConcurrency;
     }
 
-    private async Task CheckProductAsync(WatchedProductDto product, ILambdaLogger logger)
+    private async Task CheckProductGroupAsync(IReadOnlyList<WatchedProductDto> products, ILambdaLogger logger)
     {
-        logger.LogInformation($"Checking watched product for Telegram chat {product.ChatId}.");
-        var actual = await GetProductDetailsAsync(product.ProductUrl, logger);
+        var representativeProduct = products[0];
+        logger.LogInformation($"Checking product {representativeProduct.ProductId ?? representativeProduct.ProductUrl} for {products.Count} watcher(s).");
+        var actual = await GetProductDetailsAsync(representativeProduct.ProductUrl, logger);
         if (actual is null)
         {
-            logger.LogInformation($"No product metadata found for watched product in chat {product.ChatId}; leaving stored values unchanged.");
+            logger.LogInformation($"No product metadata found for product {representativeProduct.ProductId ?? representativeProduct.ProductUrl}; leaving stored values unchanged.");
             return;
         }
 
-        if (actual.IsActive is false)
+        foreach (var product in products)
         {
-            if (product.IsActive is not false)
+            if (actual.IsActive is false)
             {
-                await SendProductInactiveAsync(product, logger);
+                if (product.IsActive is not false)
+                {
+                    await SendProductInactiveAsync(product, logger);
+                }
+
+                await UpdateProductActivityAsync(product, false, logger);
+                continue;
             }
 
-            await UpdateProductActivityAsync(product, false, logger);
-            return;
+            var nameChanged = product.ProductName is not null
+                && actual.Name is not null
+                && !string.Equals(product.ProductName, actual.Name, StringComparison.Ordinal);
+            var priceChanged = product.ProductPrice is not null
+                && actual.Price is not null
+                && !string.Equals(product.ProductPrice, actual.Price, StringComparison.Ordinal);
+
+            if (nameChanged || priceChanged)
+            {
+                await SendProductChangeAsync(product, actual, nameChanged, priceChanged, logger);
+            }
+
+            await UpdateProductAsync(product, actual, logger);
         }
-
-        var nameChanged = product.ProductName is not null
-            && actual.Name is not null
-            && !string.Equals(product.ProductName, actual.Name, StringComparison.Ordinal);
-        var priceChanged = product.ProductPrice is not null
-            && actual.Price is not null
-            && !string.Equals(product.ProductPrice, actual.Price, StringComparison.Ordinal);
-
-        if (nameChanged || priceChanged)
-        {
-            await SendProductChangeAsync(product, actual, nameChanged, priceChanged, logger);
-        }
-
-        await UpdateProductAsync(product, actual, logger);
     }
 
     private async Task<OlxProductDetailsDto?> GetProductDetailsAsync(string productUrl, ILambdaLogger logger)
