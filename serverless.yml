@@ -14,6 +14,18 @@ provider:
   timeout: 30
   environment:
     STAGE: ${sls:stage}
+    WATCHED_PRODUCTS_TABLE: ${self:service}-${sls:stage}-watched-products
+    TELEGRAM_BOT_TOKEN: ${env:TELEGRAM_BOT_TOKEN}
+    TELEGRAM_WEBHOOK_SECRET: ${env:TELEGRAM_WEBHOOK_SECRET, ''}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:Query
+          Resource:
+            - Fn::GetAtt: [WatchedProductsTable, Arn]
 
 package:
   individually: true
@@ -21,14 +33,14 @@ package:
 functions:
   listingsApi:
     handler: OlxWatcher.ListingsApi::OlxWatcher.ListingsApi.Function::FunctionHandler
-    description: Returns the current OLX listing-watch status.
+    description: Processes Telegram commands for watched OLX products.
     package:
       artifact: src/OlxWatcher.ListingsApi/publish/deploy-package.zip
       projectFolder: src/OlxWatcher.ListingsApi
     events:
       - httpApi:
-          method: GET
-          path: /listings
+          method: POST
+          path: /telegram/webhook
   listingsWatcher:
     handler: OlxWatcher.ListingsWatcher::OlxWatcher.ListingsWatcher.Function::FunctionHandler
     description: Periodically checks OLX listings.
@@ -40,3 +52,21 @@ functions:
       - schedule:
           rate: rate(15 minutes)
           enabled: true
+
+resources:
+  Resources:
+    WatchedProductsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-watched-products
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: chatId
+            AttributeType: S
+          - AttributeName: productUrl
+            AttributeType: S
+        KeySchema:
+          - AttributeName: chatId
+            KeyType: HASH
+          - AttributeName: productUrl
+            KeyType: RANGE
