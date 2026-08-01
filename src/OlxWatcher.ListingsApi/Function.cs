@@ -6,6 +6,7 @@ using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
+using OlxWatcher.ListingsApi.Dtos;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -208,27 +209,4 @@ public sealed class Function
         StatusCode = (int)statusCode
     };
 
-    private sealed class TelegramUpdate
-    {
-        [JsonPropertyName("update_id")]
-        public long UpdateId { get; init; }
-
-        [JsonPropertyName("message")]
-        public TelegramMessage? Message { get; init; }
-    }
-
-    private sealed class TelegramMessage
-    {
-        [JsonPropertyName("chat")]
-        public TelegramChat? Chat { get; init; }
-
-        [JsonPropertyName("text")]
-        public string? Text { get; init; }
-    }
-
-    private sealed class TelegramChat
-    {
-        [JsonPropertyName("id")]
-        public long Id { get; init; }
-    }
 }
