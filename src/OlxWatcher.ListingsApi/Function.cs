@@ -135,7 +135,9 @@ public sealed class Function
         }
 
         logger.LogInformation($"Saved a watched product for Telegram chat {chatId}. Name and price resolved: {product.Name is not null}/{product.Price is not null}.");
-        return $"Відстежую:\n{product.Url}";
+        var productName = product.Name ?? "Без назви";
+        var productPrice = product.Price is null ? "не вказано" : PriceFormatter.FormatUah(product.Price);
+        return $"Відстежую:\n{productName}\nЦіна: {productPrice}\n{product.Url}";
     }
 
     private async Task<bool> IsProductAlreadyWatchedAsync(string chatId, string productId)
