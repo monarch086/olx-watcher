@@ -5,8 +5,17 @@ namespace OlxWatcher.Shared.DynamoDb;
 
 public static class WatchedProductDynamoMapper
 {
+    public const string WatchRecordType = "watchedProduct";
+    public const string ProductIdGuardRecordType = "productIdGuard";
+
     public static WatchedProductDto? ToWatchedProduct(IReadOnlyDictionary<string, AttributeValue> item)
     {
+        var recordType = GetString(item, "recordType");
+        if (recordType is not null && !string.Equals(recordType, WatchRecordType, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
         var chatId = GetString(item, "chatId");
         var productUrl = GetString(item, "productUrl");
         return chatId is null || productUrl is null
@@ -27,6 +36,8 @@ public static class WatchedProductDynamoMapper
         ["chatId"] = new() { S = product.ChatId },
         ["productUrl"] = new() { S = product.ProductUrl }
     };
+
+    public static string CreateProductIdGuardSortKey(string productId) => $"__product-id-guard__{productId}";
 
     private static string? GetString(IReadOnlyDictionary<string, AttributeValue> item, string attributeName)
     {

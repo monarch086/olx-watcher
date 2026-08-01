@@ -104,23 +104,95 @@ public sealed class Function
             return "Не вдалося визначити ID оголошення. Надішліть коректний URL з OLX або числовий ID оголошення.";
         }
 
-        await _dynamoDb.PutItemAsync(new PutItemRequest
+        if (await IsProductAlreadyWatchedAsync(chatId, product.Id))
         {
-            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-            Item = new Dictionary<string, AttributeValue>
+            logger.LogInformation($"Product ID {product.Id} is already watched for Telegram chat {chatId}.");
+            return "Ви вже відстежуєте це оголошення.";
+        }
+
+        try
+        {
+            await _dynamoDb.TransactWriteItemsAsync(new TransactWriteItemsRequest
             {
-                ["chatId"] = new() { S = chatId },
-                ["productUrl"] = new() { S = product.Url },
-                ["productId"] = new() { S = product.Id },
-                ["addedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") },
-                ["productName"] = new() { NULL = true },
-                ["productPrice"] = new() { NULL = true },
-                ["isActive"] = new() { NULL = true }
-            }
-        });
+                TransactItems =
+                [
+                    new TransactWriteItem
+                    {
+                        Put = new Put
+                        {
+                            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+                            ConditionExpression = "attribute_not_exists(chatId) AND attribute_not_exists(productUrl)",
+                            Item = new Dictionary<string, AttributeValue>
+                            {
+                                ["chatId"] = new() { S = chatId },
+                                ["productUrl"] = new() { S = WatchedProductDynamoMapper.CreateProductIdGuardSortKey(product.Id) },
+                                ["productId"] = new() { S = product.Id },
+                                ["recordType"] = new() { S = WatchedProductDynamoMapper.ProductIdGuardRecordType }
+                            }
+                        }
+                    },
+                    new TransactWriteItem
+                    {
+                        Put = new Put
+                        {
+                            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+                            ConditionExpression = "attribute_not_exists(chatId) AND attribute_not_exists(productUrl)",
+                            Item = new Dictionary<string, AttributeValue>
+                            {
+                                ["chatId"] = new() { S = chatId },
+                                ["productUrl"] = new() { S = product.Url },
+                                ["productId"] = new() { S = product.Id },
+                                ["recordType"] = new() { S = WatchedProductDynamoMapper.WatchRecordType },
+                                ["addedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") },
+                                ["productName"] = new() { NULL = true },
+                                ["productPrice"] = new() { NULL = true },
+                                ["isActive"] = new() { NULL = true }
+                            }
+                        }
+                    }
+                ]
+            });
+        }
+        catch (TransactionCanceledException exception) when (exception.CancellationReasons.Any(reason =>
+            string.Equals(reason.Code, "ConditionalCheckFailed", StringComparison.Ordinal)))
+        {
+            logger.LogInformation($"Product ID {product.Id} was added concurrently for Telegram chat {chatId}.");
+            return "Ви вже відстежуєте це оголошення.";
+        }
 
         logger.LogInformation($"Saved a watched product for Telegram chat {chatId}.");
         return $"Відстежую:\n{product.Url}";
+    }
+
+    private async Task<bool> IsProductAlreadyWatchedAsync(string chatId, string productId)
+    {
+        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
+        do
+        {
+            var response = await _dynamoDb.QueryAsync(new QueryRequest
+            {
+                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+                KeyConditionExpression = "chatId = :chatId",
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                {
+                    [":chatId"] = new() { S = chatId }
+                },
+                ExclusiveStartKey = lastEvaluatedKey
+            });
+
+            if (response.Items
+                .Select(WatchedProductDynamoMapper.ToWatchedProduct)
+                .OfType<WatchedProductDto>()
+                .Any(watchedProduct => string.Equals(watchedProduct.ProductId, productId, StringComparison.Ordinal)))
+            {
+                return true;
+            }
+
+            lastEvaluatedKey = response.LastEvaluatedKey;
+        }
+        while (lastEvaluatedKey is { Count: > 0 });
+
+        return false;
     }
 
     private async Task<string> ListAsync(string chatId, ILambdaLogger logger)
