@@ -256,6 +256,7 @@ public sealed class Function
             "\n\n",
             products.Select((product, index) =>
                 $"{index + 1}. {product.ProductName ?? "Без назви"}\n"
+                + (product.IsActive is false ? "⚠️ Неактивне\n" : string.Empty)
                 + $"Ціна: {(product.ProductPrice is null ? "не вказано" : PriceFormatter.FormatUah(product.ProductPrice))}\n"
                 + product.ProductUrl));
         return responseText.Length <= 4096 ? responseText : responseText[..4093] + "...";
