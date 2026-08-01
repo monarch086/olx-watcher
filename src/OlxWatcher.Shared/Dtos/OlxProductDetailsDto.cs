@@ -2,6 +2,8 @@ namespace OlxWatcher.Shared.Dtos;
 
 public sealed class OlxProductDetailsDto
 {
+    public bool? IsActive { get; init; }
+
     public string? ProductId { get; init; }
 
     public string? Name { get; init; }

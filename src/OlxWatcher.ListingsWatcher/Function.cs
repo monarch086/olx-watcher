@@ -79,6 +79,17 @@ public sealed class Function
             return;
         }
 
+        if (actual.IsActive is false)
+        {
+            if (product.IsActive is not false)
+            {
+                await SendProductInactiveAsync(product, logger);
+            }
+
+            await UpdateProductActivityAsync(product, false, logger);
+            return;
+        }
+
         var nameChanged = product.ProductName is not null
             && actual.Name is not null
             && !string.Equals(product.ProductName, actual.Name, StringComparison.Ordinal);
@@ -142,6 +153,23 @@ public sealed class Function
         logger.LogInformation($"Updated watched product metadata for Telegram chat {product.ChatId}.");
     }
 
+    private async Task UpdateProductActivityAsync(WatchedProductDto product, bool isActive, ILambdaLogger logger)
+    {
+        await _dynamoDb.UpdateItemAsync(new UpdateItemRequest
+        {
+            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+            Key = WatchedProductDynamoMapper.CreateKey(product),
+            UpdateExpression = "SET isActive = :isActive, lastCheckedAt = :lastCheckedAt",
+            ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+            {
+                [":isActive"] = new() { BOOL = isActive },
+                [":lastCheckedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") }
+            }
+        });
+
+        logger.LogInformation($"Updated watched product activity to {isActive} for Telegram chat {product.ChatId}.");
+    }
+
     private static async Task SendProductChangeAsync(
         WatchedProductDto product,
         OlxProductDetailsDto actual,
@@ -174,6 +202,23 @@ public sealed class Function
                 disable_web_page_preview = true
             });
         logger.LogInformation($"Telegram product-change notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static async Task SendProductInactiveAsync(WatchedProductDto product, ILambdaLogger logger)
+    {
+        var productName = product.ProductName ?? "Оголошення OLX";
+        var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
+        using var response = await HttpClient.PostAsJsonAsync(
+            $"https://api.telegram.org/bot{token}/sendMessage",
+            new
+            {
+                chat_id = product.ChatId,
+                text = $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення більше неактивне.\n{WebUtility.HtmlEncode(product.ProductUrl)}",
+                parse_mode = "HTML",
+                disable_web_page_preview = true
+            });
+        logger.LogInformation($"Telegram inactive-product notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
         response.EnsureSuccessStatusCode();
     }
 

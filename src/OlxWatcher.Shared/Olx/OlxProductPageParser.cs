@@ -12,6 +12,9 @@ public static class OlxProductPageParser
     private static readonly Regex ProductIdRegex = new(
         "\\\"(?:advertId|advert_id|ad_id|productId|product_id)\\\"\\s*:\\s*\\\"?(?<id>\\d+)\\\"?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex CanonicalProductIdRegex = new(
+        "<link\\b[^>]*\\bid\\s*=\\s*[\\\"']ssr_canonical[\\\"'][^>]*\\bhref\\s*=\\s*[\\\"']https?://(?:www\\.)?olx\\.ua/d/(?:uk/)?(?<id>\\d+)/?[\\\"']",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     public static bool IsValidProductId(string value) =>
         Regex.IsMatch(value, "^\\d+$", RegexOptions.CultureInvariant);
@@ -47,6 +50,18 @@ public static class OlxProductPageParser
             : null;
         if (productDetails is null)
         {
+            var canonicalProductId = CanonicalProductIdRegex.Match(html) is { Success: true } canonicalMatch
+                ? canonicalMatch.Groups["id"].Value
+                : null;
+            if (IsInactiveListingPage(html) && canonicalProductId is not null)
+            {
+                return new OlxProductDetailsDto
+                {
+                    ProductId = canonicalProductId,
+                    IsActive = false
+                };
+            }
+
             return fallbackProductId is null ? null : new OlxProductDetailsDto { ProductId = fallbackProductId };
         }
 
@@ -55,6 +70,7 @@ public static class OlxProductPageParser
             : new OlxProductDetailsDto
             {
                 ProductId = fallbackProductId,
+                IsActive = true,
                 Name = productDetails.Name,
                 Price = productDetails.Price,
                 Currency = productDetails.Currency
@@ -116,6 +132,7 @@ public static class OlxProductPageParser
             ? null
             : new OlxProductDetailsDto
             {
+                IsActive = true,
                 ProductId = productId,
                 Name = name,
                 Price = price,
@@ -154,4 +171,8 @@ public static class OlxProductPageParser
             _ => null
         };
     }
+
+    private static bool IsInactiveListingPage(string html) =>
+        html.Contains("property=\"og:title\" content=\"Оголошення OLX.ua:", StringComparison.Ordinal)
+        || html.Contains("property='og:title' content='Оголошення OLX.ua:", StringComparison.Ordinal);
 }
