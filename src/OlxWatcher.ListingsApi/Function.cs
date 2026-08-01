@@ -112,49 +112,23 @@ public sealed class Function
 
         try
         {
-            await _dynamoDb.TransactWriteItemsAsync(new TransactWriteItemsRequest
+            await _dynamoDb.PutItemAsync(new PutItemRequest
             {
-                TransactItems =
-                [
-                    new TransactWriteItem
-                    {
-                        Put = new Put
-                        {
-                            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-                            ConditionExpression = "attribute_not_exists(chatId) AND attribute_not_exists(productUrl)",
-                            Item = new Dictionary<string, AttributeValue>
-                            {
-                                ["chatId"] = new() { S = chatId },
-                                ["productUrl"] = new() { S = WatchedProductDynamoMapper.CreateProductIdGuardSortKey(product.Id) },
-                                ["productId"] = new() { S = product.Id },
-                                ["recordType"] = new() { S = WatchedProductDynamoMapper.ProductIdGuardRecordType }
-                            }
-                        }
-                    },
-                    new TransactWriteItem
-                    {
-                        Put = new Put
-                        {
-                            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-                            ConditionExpression = "attribute_not_exists(chatId) AND attribute_not_exists(productUrl)",
-                            Item = new Dictionary<string, AttributeValue>
-                            {
-                                ["chatId"] = new() { S = chatId },
-                                ["productUrl"] = new() { S = product.Url },
-                                ["productId"] = new() { S = product.Id },
-                                ["recordType"] = new() { S = WatchedProductDynamoMapper.WatchRecordType },
-                                ["addedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") },
-                                ["productName"] = NullableString(product.Name),
-                                ["productPrice"] = NullableString(product.Price),
-                                ["isActive"] = new() { NULL = true }
-                            }
-                        }
-                    }
-                ]
+                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+                ConditionExpression = "attribute_not_exists(chatId) AND attribute_not_exists(productUrl)",
+                Item = new Dictionary<string, AttributeValue>
+                {
+                    ["chatId"] = new() { S = chatId },
+                    ["productUrl"] = new() { S = product.Url },
+                    ["productId"] = new() { S = product.Id },
+                    ["addedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") },
+                    ["productName"] = NullableString(product.Name),
+                    ["productPrice"] = NullableString(product.Price),
+                    ["isActive"] = new() { NULL = true }
+                }
             });
         }
-        catch (TransactionCanceledException exception) when (exception.CancellationReasons.Any(reason =>
-            string.Equals(reason.Code, "ConditionalCheckFailed", StringComparison.Ordinal)))
+        catch (ConditionalCheckFailedException)
         {
             logger.LogInformation($"Product ID {product.Id} was added concurrently for Telegram chat {chatId}.");
             return "Ви вже відстежуєте це оголошення.";

@@ -24,7 +24,6 @@ provider:
         - Effect: Allow
           Action:
             - dynamodb:PutItem
-            - dynamodb:TransactWriteItems
             - dynamodb:Query
             - dynamodb:Scan
             - dynamodb:UpdateItem
