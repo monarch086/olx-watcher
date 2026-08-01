@@ -14,10 +14,28 @@ npm install
 dotnet tool install -g Amazon.Lambda.Tools
 dotnet restore
 npm run deploy -- --stage dev --region eu-central-1
+
+##
+serverless package
+serverless deploy --stage dev --region eu-central-1
 ```
 
-Use `npm run package` to build deployment artifacts without deploying. The `serverless-multi-dotnet` plugin packages each project into its configured `publish/deploy-package.zip`; this lets one service contain both .NET projects. AWS credentials must be configured for the target account.
+Use `npm run package` (or `serverless package`) to build deployment artifacts without deploying. The Bash script at `scripts/package-dotnet.sh` packages each .NET project into its configured, uniquely named ZIP artifact, allowing one service to deploy both projects. AWS credentials must be configured for the target account.
 
 ## Telegram setup
 
-Before deploying, set `TELEGRAM_BOT_TOKEN` and a random `TELEGRAM_WEBHOOK_SECRET` in your shell. After deployment, register the returned HTTP API endpoint plus `/telegram/webhook` as the bot webhook and supply the same secret token. The deployment creates a pay-per-request DynamoDB table named `olx-watcher-<stage>-watched-products`.
+Create the following `SecureString` parameters in the same AWS Region and stage that you deploy to:
+
+```bash
+aws ssm put-parameter \
+  --name /olx-watcher/dev/telegram-bot-token \
+  --type SecureString \
+  --value '<Telegram bot token>'
+
+aws ssm put-parameter \
+  --name /olx-watcher/dev/telegram-webhook-secret \
+  --type SecureString \
+  --value '<random webhook secret>'
+```
+
+Replace `dev` with the deployment stage. Use `--overwrite` when rotating a value. Serverless resolves these parameters during deployment, so the AWS profile used for deployment needs permission to read and decrypt them. After deployment, register the returned HTTP API endpoint plus `/telegram/webhook` as the bot webhook and supply the same secret token. The deployment creates a pay-per-request DynamoDB table named `olx-watcher-<stage>-watched-products`.

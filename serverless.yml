@@ -1,8 +1,9 @@
+# "org" ensures this Service is used with the correct Serverless Framework Access Key.
+org: barsuk
 service: olx-watcher
-frameworkVersion: '4'
 
 plugins:
-  - serverless-multi-dotnet
+  - ./serverless-dotnet-package.js
 
 provider:
   name: aws
@@ -15,8 +16,8 @@ provider:
   environment:
     STAGE: ${sls:stage}
     WATCHED_PRODUCTS_TABLE: ${self:service}-${sls:stage}-watched-products
-    TELEGRAM_BOT_TOKEN: ${env:TELEGRAM_BOT_TOKEN}
-    TELEGRAM_WEBHOOK_SECRET: ${env:TELEGRAM_WEBHOOK_SECRET, ''}
+    TELEGRAM_BOT_TOKEN: ${ssm:/olx-watcher/${sls:stage}/telegram-bot-token}
+    TELEGRAM_WEBHOOK_SECRET: ${ssm:/olx-watcher/${sls:stage}/telegram-webhook-secret}
   iam:
     role:
       statements:
@@ -35,8 +36,7 @@ functions:
     handler: OlxWatcher.ListingsApi::OlxWatcher.ListingsApi.Function::FunctionHandler
     description: Processes Telegram commands for watched OLX products.
     package:
-      artifact: src/OlxWatcher.ListingsApi/publish/deploy-package.zip
-      projectFolder: src/OlxWatcher.ListingsApi
+      artifact: src/OlxWatcher.ListingsApi/publish/listings-api.zip
     events:
       - httpApi:
           method: POST
@@ -46,8 +46,7 @@ functions:
     description: Periodically checks OLX listings.
     timeout: 60
     package:
-      artifact: src/OlxWatcher.ListingsWatcher/publish/deploy-package.zip
-      projectFolder: src/OlxWatcher.ListingsWatcher
+      artifact: src/OlxWatcher.ListingsWatcher/publish/listings-watcher.zip
     events:
       - schedule:
           rate: rate(15 minutes)

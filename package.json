@@ -1,8 +1,7 @@
 {
   "private": true,
   "devDependencies": {
-    "serverless": "^4.0.0",
-    "serverless-multi-dotnet": "^0.9.0"
+    "serverless": "^4.0.0"
   },
   "scripts": {
     "package": "serverless package",
