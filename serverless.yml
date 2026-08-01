@@ -1,0 +1,42 @@
+service: olx-watcher
+frameworkVersion: '4'
+
+plugins:
+  - serverless-multi-dotnet
+
+provider:
+  name: aws
+  runtime: dotnet8
+  region: ${opt:region, 'eu-central-1'}
+  stage: ${opt:stage, 'dev'}
+  architecture: arm64
+  memorySize: 256
+  timeout: 30
+  environment:
+    STAGE: ${sls:stage}
+
+package:
+  individually: true
+
+functions:
+  listingsApi:
+    handler: OlxWatcher.ListingsApi::OlxWatcher.ListingsApi.Function::FunctionHandler
+    description: Returns the current OLX listing-watch status.
+    package:
+      artifact: src/OlxWatcher.ListingsApi/publish/deploy-package.zip
+      projectFolder: src/OlxWatcher.ListingsApi
+    events:
+      - httpApi:
+          method: GET
+          path: /listings
+  listingsWatcher:
+    handler: OlxWatcher.ListingsWatcher::OlxWatcher.ListingsWatcher.Function::FunctionHandler
+    description: Periodically checks OLX listings.
+    timeout: 60
+    package:
+      artifact: src/OlxWatcher.ListingsWatcher/publish/deploy-package.zip
+      projectFolder: src/OlxWatcher.ListingsWatcher
+    events:
+      - schedule:
+          rate: rate(15 minutes)
+          enabled: true

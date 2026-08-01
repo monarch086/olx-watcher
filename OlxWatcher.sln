@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OlxWatcher.ListingsApi", "src\OlxWatcher.ListingsApi\OlxWatcher.ListingsApi.csproj", "{6EAC8E18-7F3E-4B4A-89F7-532E5C7C7FDD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OlxWatcher.ListingsWatcher", "src\OlxWatcher.ListingsWatcher\OlxWatcher.ListingsWatcher.csproj", "{EF26B047-A9F2-4533-A6E4-841CC77728A2}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6EAC8E18-7F3E-4B4A-89F7-532E5C7C7FDD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6EAC8E18-7F3E-4B4A-89F7-532E5C7C7FDD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6EAC8E18-7F3E-4B4A-89F7-532E5C7C7FDD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6EAC8E18-7F3E-4B4A-89F7-532E5C7C7FDD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EF26B047-A9F2-4533-A6E4-841CC77728A2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EF26B047-A9F2-4533-A6E4-841CC77728A2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EF26B047-A9F2-4533-A6E4-841CC77728A2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EF26B047-A9F2-4533-A6E4-841CC77728A2}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
