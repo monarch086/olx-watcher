@@ -26,8 +26,10 @@ public sealed class Function
         APIGatewayHttpApiV2ProxyRequest request,
         ILambdaContext context)
     {
+        context.Logger.LogInformation("Received Telegram webhook request.");
         if (!HasValidWebhookSecret(request))
         {
+            context.Logger.LogInformation("Rejected Telegram webhook request because the secret header did not match.");
             return Response(HttpStatusCode.Unauthorized);
         }
 
@@ -38,22 +40,30 @@ public sealed class Function
         }
         catch (JsonException)
         {
+            context.Logger.LogInformation("Ignoring Telegram webhook request with an invalid JSON body.");
             return Response(HttpStatusCode.OK);
         }
 
         var message = update?.Message;
         if (message?.Chat is null || string.IsNullOrWhiteSpace(message.Text))
         {
+            context.Logger.LogInformation($"Ignoring Telegram update {update?.UpdateId}: no text message was present.");
             return Response(HttpStatusCode.OK);
         }
 
         var chatId = message.Chat.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
         try
         {
+            context.Logger.LogInformation($"Processing Telegram update {update?.UpdateId} for chat {chatId}.");
             var reply = await ProcessCommandAsync(chatId, message.Text, context.Logger);
             if (reply is not null)
             {
-                await SendTelegramMessageAsync(chatId, reply);
+                context.Logger.LogInformation($"Sending Telegram reply for update {update?.UpdateId} to chat {chatId}.");
+                await SendTelegramMessageAsync(chatId, reply, context.Logger);
+            }
+            else
+            {
+                context.Logger.LogInformation($"Ignoring unsupported command in Telegram update {update?.UpdateId}.");
             }
         }
         catch (Exception exception)
@@ -69,11 +79,12 @@ public sealed class Function
     {
         var parts = text.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
         var command = parts[0].Split('@', 2)[0].ToLowerInvariant();
+        logger.LogInformation($"Received Telegram command {command} for chat {chatId}.");
 
         return command switch
         {
             "/watch" => await WatchAsync(chatId, parts.ElementAtOrDefault(1), logger),
-            "/list" => await ListAsync(chatId),
+            "/list" => await ListAsync(chatId, logger),
             "/start" or "/help" => "Send /watch followed by an OLX product URL to start watching it. Use /list to see watched products.",
             _ => null
         };
@@ -104,7 +115,7 @@ public sealed class Function
         return $"Watching:\n{productUrl}";
     }
 
-    private async Task<string> ListAsync(string chatId)
+    private async Task<string> ListAsync(string chatId, ILambdaLogger logger)
     {
         var response = await _dynamoDb.QueryAsync(new QueryRequest
         {
@@ -121,21 +132,29 @@ public sealed class Function
             .Where(url => !string.IsNullOrWhiteSpace(url))
             .ToList();
 
+        logger.LogInformation($"Retrieved {urls.Count} watched products for Telegram chat {chatId}.");
+
         if (urls.Count == 0)
         {
             return "You are not watching any products yet. Use /watch <OLX URL>.";
         }
 
+        return FormatWatchedProducts(urls);
+    }
+
+    private static string FormatWatchedProducts(IReadOnlyList<string> urls)
+    {
         var responseText = "Watched products:\n" + string.Join('\n', urls.Select((url, index) => $"{index + 1}. {url}"));
         return responseText.Length <= 4096 ? responseText : responseText[..4093] + "...";
     }
 
-    private static async Task SendTelegramMessageAsync(string chatId, string text)
+    private static async Task SendTelegramMessageAsync(string chatId, string text, ILambdaLogger logger)
     {
         var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
         using var response = await TelegramClient.PostAsJsonAsync(
             $"https://api.telegram.org/bot{token}/sendMessage",
             new { chat_id = chatId, text });
+        logger.LogInformation($"Telegram sendMessage returned HTTP {(int)response.StatusCode} for chat {chatId}.");
         response.EnsureSuccessStatusCode();
     }
 
@@ -147,9 +166,14 @@ public sealed class Function
             return true;
         }
 
-        return request.Headers is not null
-            && request.Headers.TryGetValue("x-telegram-bot-api-secret-token", out var suppliedSecret)
-            && string.Equals(suppliedSecret, expectedSecret, StringComparison.Ordinal);
+        var suppliedSecret = request.Headers?
+            .FirstOrDefault(header => string.Equals(
+                header.Key,
+                "x-telegram-bot-api-secret-token",
+                StringComparison.OrdinalIgnoreCase))
+            .Value;
+
+        return string.Equals(suppliedSecret, expectedSecret, StringComparison.Ordinal);
     }
 
     private static bool IsOlxUrl(string? value, out string productUrl)
@@ -186,6 +210,9 @@ public sealed class Function
 
     private sealed class TelegramUpdate
     {
+        [JsonPropertyName("update_id")]
+        public long UpdateId { get; init; }
+
         [JsonPropertyName("message")]
         public TelegramMessage? Message { get; init; }
     }
