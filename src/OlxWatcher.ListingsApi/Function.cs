@@ -144,8 +144,8 @@ public sealed class Function
                                 ["productId"] = new() { S = product.Id },
                                 ["recordType"] = new() { S = WatchedProductDynamoMapper.WatchRecordType },
                                 ["addedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") },
-                                ["productName"] = new() { NULL = true },
-                                ["productPrice"] = new() { NULL = true },
+                                ["productName"] = NullableString(product.Name),
+                                ["productPrice"] = NullableString(product.Price),
                                 ["isActive"] = new() { NULL = true }
                             }
                         }
@@ -160,7 +160,7 @@ public sealed class Function
             return "Ви вже відстежуєте це оголошення.";
         }
 
-        logger.LogInformation($"Saved a watched product for Telegram chat {chatId}.");
+        logger.LogInformation($"Saved a watched product for Telegram chat {chatId}. Name and price resolved: {product.Name is not null}/{product.Price is not null}.");
         return $"Відстежую:\n{product.Url}";
     }
 
@@ -279,7 +279,13 @@ public sealed class Function
 
         if (OlxProductPageParser.IsValidProductId(reference))
         {
-            return new OlxProductReference(reference, $"https://www.olx.ua/d/uk/{reference}");
+            var idProductUrl = $"https://www.olx.ua/d/uk/{reference}";
+            var idProductDetails = await TryGetProductDetailsFromPageAsync(idProductUrl, logger);
+            return new OlxProductReference(
+                idProductDetails?.ProductId ?? reference,
+                idProductUrl,
+                idProductDetails?.Name,
+                idProductDetails?.Price);
         }
 
         if (!Uri.TryCreate(reference, UriKind.Absolute, out var uri)
@@ -299,21 +305,37 @@ public sealed class Function
 
         var builder = new UriBuilder(uri) { Fragment = string.Empty };
         var productUrl = builder.Uri.AbsoluteUri;
-        var productId = await GetProductIdFromPageAsync(productUrl, logger);
-        return productId is null ? null : new OlxProductReference(productId, productUrl);
+        var productDetails = await TryGetProductDetailsFromPageAsync(productUrl, logger);
+        return productDetails?.ProductId is null
+            ? null
+            : new OlxProductReference(productDetails.ProductId, productUrl, productDetails.Name, productDetails.Price);
     }
 
-    private static async Task<string?> GetProductIdFromPageAsync(string productUrl, ILambdaLogger logger)
+    private static async Task<OlxProductDetailsDto?> TryGetProductDetailsFromPageAsync(string productUrl, ILambdaLogger logger)
     {
-        using var response = await OlxPageClient.GetAsync(productUrl);
-        logger.LogInformation($"OLX product-ID lookup returned HTTP {(int)response.StatusCode}.");
-        if (!response.IsSuccessStatusCode)
+        try
         {
+            using var response = await OlxPageClient.GetAsync(productUrl);
+            logger.LogInformation($"OLX product lookup returned HTTP {(int)response.StatusCode}.");
+            return response.IsSuccessStatusCode
+                ? OlxProductPageParser.Parse(await response.Content.ReadAsStringAsync())
+                : null;
+        }
+        catch (HttpRequestException exception)
+        {
+            logger.LogInformation($"OLX product lookup failed: {exception.Message}");
             return null;
         }
-
-        return OlxProductPageParser.Parse(await response.Content.ReadAsStringAsync())?.ProductId;
+        catch (TaskCanceledException exception)
+        {
+            logger.LogInformation($"OLX product lookup timed out: {exception.Message}");
+            return null;
+        }
     }
+
+    private static AttributeValue NullableString(string? value) => value is null
+        ? new AttributeValue { NULL = true }
+        : new AttributeValue { S = value };
 
     private static HttpClient CreateOlxPageClient()
     {
@@ -331,6 +353,6 @@ public sealed class Function
         StatusCode = (int)statusCode
     };
 
-    private sealed record OlxProductReference(string Id, string Url);
+    private sealed record OlxProductReference(string Id, string Url, string? Name, string? Price);
 
 }
