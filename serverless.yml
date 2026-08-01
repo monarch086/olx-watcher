@@ -16,6 +16,7 @@ provider:
   environment:
     STAGE: ${sls:stage}
     WATCHED_PRODUCTS_TABLE: ${self:service}-${sls:stage}-watched-products
+    PRODUCT_PRICE_HISTORY_TABLE: ${self:service}-${sls:stage}-product-price-history
     WATCHER_MAX_CONCURRENCY: 5
     TELEGRAM_BOT_TOKEN: ${ssm:/olx-watcher/${sls:stage}/telegram-bot-token}
     TELEGRAM_WEBHOOK_SECRET: ${ssm:/olx-watcher/${sls:stage}/telegram-webhook-secret}
@@ -30,6 +31,7 @@ provider:
             - dynamodb:UpdateItem
           Resource:
             - Fn::GetAtt: [WatchedProductsTable, Arn]
+            - Fn::GetAtt: [ProductPriceHistoryTable, Arn]
 
 package:
   individually: true
@@ -101,4 +103,19 @@ resources:
           - AttributeName: chatId
             KeyType: HASH
           - AttributeName: productUrl
+            KeyType: RANGE
+    ProductPriceHistoryTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-product-price-history
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: productId
+            AttributeType: S
+          - AttributeName: changeDate
+            AttributeType: S
+        KeySchema:
+          - AttributeName: productId
+            KeyType: HASH
+          - AttributeName: changeDate
             KeyType: RANGE

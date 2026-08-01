@@ -143,6 +143,15 @@ public sealed class Function
             return;
         }
 
+        var productId = actual.ProductId ?? representativeProduct.ProductId;
+        var hasPriceChange = actual.Price is not null && products.Any(product =>
+            product.ProductPrice is not null
+            && !string.Equals(product.ProductPrice, actual.Price, StringComparison.Ordinal));
+        if (hasPriceChange && productId is not null)
+        {
+            await RecordPriceChangeAsync(productId, actual.Price!, logger);
+        }
+
         foreach (var product in products)
         {
             if (actual.IsActive is false)
@@ -240,6 +249,22 @@ public sealed class Function
         });
 
         logger.LogInformation($"Updated watched product activity to {isActive} for Telegram chat {product.ChatId}.");
+    }
+
+    private async Task RecordPriceChangeAsync(string productId, string productPrice, ILambdaLogger logger)
+    {
+        var changeDate = DateTimeOffset.UtcNow.ToString("O");
+        await _dynamoDb.PutItemAsync(new PutItemRequest
+        {
+            TableName = RequiredEnvironmentVariable("PRODUCT_PRICE_HISTORY_TABLE"),
+            Item = new Dictionary<string, AttributeValue>
+            {
+                ["productId"] = new() { S = productId },
+                ["productPrice"] = new() { S = productPrice },
+                ["changeDate"] = new() { S = changeDate }
+            }
+        });
+        logger.LogInformation($"Recorded a price change for product {productId} at {changeDate}.");
     }
 
     private static async Task SendProductChangeAsync(
