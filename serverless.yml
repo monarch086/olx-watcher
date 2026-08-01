@@ -51,7 +51,7 @@ functions:
       artifact: src/OlxWatcher.ListingsWatcher/publish/listings-watcher.zip
     events:
       - schedule:
-          rate: rate(15 minutes)
+          rate: cron(0 * * * ? *)
           enabled: true
 
 resources:
