@@ -51,6 +51,11 @@ public sealed class Function
                     continue;
                 }
 
+                if (!ShouldCheckProduct(product, logger))
+                {
+                    continue;
+                }
+
                 try
                 {
                     await CheckProductAsync(product, logger);
@@ -67,6 +72,23 @@ public sealed class Function
         while (lastEvaluatedKey is { Count: > 0 });
 
         logger.LogInformation($"Completed scheduled listing check. Processed {processed} watched products.");
+    }
+
+    private static bool ShouldCheckProduct(WatchedProductDto product, ILambdaLogger logger)
+    {
+        if (product.IsActive is not false || product.LastCheckedAt is null)
+        {
+            return true;
+        }
+
+        var nextCheckAt = product.LastCheckedAt.Value.AddDays(7);
+        if (nextCheckAt <= DateTimeOffset.UtcNow)
+        {
+            return true;
+        }
+
+        logger.LogInformation($"Skipping inactive watched product for Telegram chat {product.ChatId} until {nextCheckAt:O}.");
+        return false;
     }
 
     private async Task CheckProductAsync(WatchedProductDto product, ILambdaLogger logger)

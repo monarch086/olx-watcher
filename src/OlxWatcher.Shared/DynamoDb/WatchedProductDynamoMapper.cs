@@ -18,7 +18,8 @@ public static class WatchedProductDynamoMapper
                 ProductId = GetString(item, "productId"),
                 ProductName = GetString(item, "productName"),
                 ProductPrice = GetString(item, "productPrice"),
-                IsActive = GetBool(item, "isActive")
+                IsActive = GetBool(item, "isActive"),
+                LastCheckedAt = GetDateTimeOffset(item, "lastCheckedAt")
             };
     }
 
@@ -46,5 +47,14 @@ public static class WatchedProductDynamoMapper
         }
 
         return value.BOOL;
+    }
+
+    private static DateTimeOffset? GetDateTimeOffset(IReadOnlyDictionary<string, AttributeValue> item, string attributeName)
+    {
+        var value = GetString(item, attributeName);
+        return DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind, out var dateTimeOffset)
+            ? dateTimeOffset
+            : null;
     }
 }

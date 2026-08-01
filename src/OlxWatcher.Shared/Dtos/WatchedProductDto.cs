@@ -13,4 +13,6 @@ public sealed class WatchedProductDto
     public string? ProductPrice { get; init; }
 
     public bool? IsActive { get; init; }
+
+    public DateTimeOffset? LastCheckedAt { get; init; }
 }
