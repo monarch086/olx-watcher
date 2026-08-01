@@ -163,6 +163,11 @@ public sealed class Function
                 && actual.Price is not null
                 && !string.Equals(product.ProductPrice, actual.Price, StringComparison.Ordinal);
 
+            if (product.IsActive is false)
+            {
+                await SendProductReactivatedAsync(product, actual, logger);
+            }
+
             if (nameChanged || priceChanged)
             {
                 await SendProductChangeAsync(product, actual, nameChanged, priceChanged, logger);
@@ -286,6 +291,26 @@ public sealed class Function
                 disable_web_page_preview = true
             });
         logger.LogInformation($"Telegram inactive-product notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
+        response.EnsureSuccessStatusCode();
+    }
+
+    private static async Task SendProductReactivatedAsync(
+        WatchedProductDto product,
+        OlxProductDetailsDto actual,
+        ILambdaLogger logger)
+    {
+        var productName = actual.Name ?? product.ProductName ?? "Оголошення OLX";
+        var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
+        using var response = await HttpClient.PostAsJsonAsync(
+            $"https://api.telegram.org/bot{token}/sendMessage",
+            new
+            {
+                chat_id = product.ChatId,
+                text = $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення знову активне.\n{WebUtility.HtmlEncode(product.ProductUrl)}",
+                parse_mode = "HTML",
+                disable_web_page_preview = true
+            });
+        logger.LogInformation($"Telegram reactivated-product notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
         response.EnsureSuccessStatusCode();
     }
 
