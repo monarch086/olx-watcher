@@ -302,6 +302,12 @@ public sealed class Function
         {
             var idProductUrl = $"https://www.olx.ua/d/uk/{reference}";
             var idProductDetails = await TryGetProductDetailsFromPageAsync(idProductUrl, logger);
+
+            if (string.IsNullOrEmpty(idProductDetails?.Name) && string.IsNullOrEmpty(idProductDetails?.Price))
+            {
+                return null;
+            }
+
             return new OlxProductReference(
                 idProductDetails?.ProductId ?? reference,
                 idProductUrl,
