@@ -7,6 +7,7 @@ using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using OlxWatcher.ListingsApi.Dtos;
+using OlxWatcher.Shared;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -86,7 +87,7 @@ public sealed class Function
         {
             "/watch" => await WatchAsync(chatId, parts.ElementAtOrDefault(1), logger),
             "/list" => await ListAsync(chatId, logger),
-            "/start" or "/help" => "Send /watch followed by an OLX product URL to start watching it. Use /list to see watched products.",
+            "/start" or "/help" => "Надішліть /watch і URL товару з OLX, щоб почати відстеження. Використовуйте /list, щоб переглянути товари.",
             _ => null
         };
     }
@@ -95,7 +96,7 @@ public sealed class Function
     {
         if (!IsOlxUrl(urlText, out var productUrl))
         {
-            return "Usage: /watch https://www.olx.../product-url";
+            return "Використання: /watch https://www.olx.../product-url";
         }
 
         await _dynamoDb.PutItemAsync(new PutItemRequest
@@ -113,39 +114,52 @@ public sealed class Function
         });
 
         logger.LogInformation($"Saved a watched product for Telegram chat {chatId}.");
-        return $"Watching:\n{productUrl}";
+        return $"Відстежую:\n{productUrl}";
     }
 
     private async Task<string> ListAsync(string chatId, ILambdaLogger logger)
     {
-        var response = await _dynamoDb.QueryAsync(new QueryRequest
+        var products = new List<WatchedProduct>();
+        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
+
+        do
         {
-            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-            KeyConditionExpression = "chatId = :chatId",
-            ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+            var response = await _dynamoDb.QueryAsync(new QueryRequest
             {
-                [":chatId"] = new() { S = chatId }
-            }
-        });
+                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+                KeyConditionExpression = "chatId = :chatId",
+                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+                {
+                    [":chatId"] = new() { S = chatId }
+                },
+                ExclusiveStartKey = lastEvaluatedKey
+            });
 
-        var urls = response.Items
-            .Select(item => item["productUrl"].S)
-            .Where(url => !string.IsNullOrWhiteSpace(url))
-            .ToList();
+            products.AddRange(response.Items
+                .Select(WatchedProduct.FromItem)
+                .Where(product => product is not null)!);
+            lastEvaluatedKey = response.LastEvaluatedKey;
+        }
+        while (lastEvaluatedKey is { Count: > 0 });
 
-        logger.LogInformation($"Retrieved {urls.Count} watched products for Telegram chat {chatId}.");
+        logger.LogInformation($"Retrieved {products.Count} watched products for Telegram chat {chatId}.");
 
-        if (urls.Count == 0)
+        if (products.Count == 0)
         {
-            return "You are not watching any products yet. Use /watch <OLX URL>.";
+            return "Ви ще не відстежуєте жодного товару. Скористайтеся /watch <URL з OLX>.";
         }
 
-        return FormatWatchedProducts(urls);
+        return FormatWatchedProducts(products);
     }
 
-    private static string FormatWatchedProducts(IReadOnlyList<string> urls)
+    private static string FormatWatchedProducts(IReadOnlyList<WatchedProduct> products)
     {
-        var responseText = "Watched products:\n" + string.Join('\n', urls.Select((url, index) => $"{index + 1}. {url}"));
+        var responseText = "Відстежувані товари:\n" + string.Join(
+            "\n\n",
+            products.Select((product, index) =>
+                $"{index + 1}. {product.Name ?? "Без назви"}\n"
+                + $"Ціна: {(product.Price is null ? "не вказано" : PriceFormatter.FormatUah(product.Price))}\n"
+                + product.Url));
         return responseText.Length <= 4096 ? responseText : responseText[..4093] + "...";
     }
 
@@ -208,5 +222,26 @@ public sealed class Function
     {
         StatusCode = (int)statusCode
     };
+
+    private sealed record WatchedProduct(string Url, string? Name, string? Price)
+    {
+        public static WatchedProduct? FromItem(IReadOnlyDictionary<string, AttributeValue> item)
+        {
+            var url = GetString(item, "productUrl");
+            return url is null
+                ? null
+                : new WatchedProduct(url, GetString(item, "productName"), GetString(item, "productPrice"));
+        }
+
+        private static string? GetString(IReadOnlyDictionary<string, AttributeValue> item, string attributeName)
+        {
+            if (!item.TryGetValue(attributeName, out var value) || value is null || value.NULL == true)
+            {
+                return null;
+            }
+
+            return value.S;
+        }
+    }
 
 }

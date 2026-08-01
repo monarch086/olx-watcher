@@ -7,6 +7,7 @@ using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.CloudWatchEvents;
 using Amazon.Lambda.Core;
+using OlxWatcher.Shared;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -207,12 +208,12 @@ public sealed class Function
             return "unknown";
         }
 
-        if (!TryParsePrice(price, out var value))
+        if (!PriceFormatter.TryParse(price, out var value))
         {
             return WebUtility.HtmlEncode(price);
         }
 
-        var formatted = value.ToString("N2", CultureInfo.GetCultureInfo("uk-UA"));
+        var formatted = PriceFormatter.FormatAmount(value);
         var currencyCode = string.IsNullOrWhiteSpace(currency) ? "UAH" : currency.ToUpperInvariant();
 
         if (currencyCode == "USD")
@@ -238,10 +239,6 @@ public sealed class Function
             return $"{formatted} {WebUtility.HtmlEncode(currencyCode)}";
         }
     }
-
-    private static bool TryParsePrice(string price, out decimal value) =>
-        decimal.TryParse(price, NumberStyles.Number, CultureInfo.InvariantCulture, out value)
-        || decimal.TryParse(price, NumberStyles.Number, CultureInfo.GetCultureInfo("pl-PL"), out value);
 
     private static async Task<decimal?> ConvertUahToUsdAsync(decimal amount, ILambdaLogger logger)
     {

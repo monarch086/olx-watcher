@@ -6,6 +6,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OlxWatcher.ListingsApi", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OlxWatcher.ListingsWatcher", "src\OlxWatcher.ListingsWatcher\OlxWatcher.ListingsWatcher.csproj", "{EF26B047-A9F2-4533-A6E4-841CC77728A2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OlxWatcher.Shared", "src\OlxWatcher.Shared\OlxWatcher.Shared.csproj", "{3EB6E1CC-846D-4E91-92EF-5E344D00EC49}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -20,5 +22,9 @@ Global
 		{EF26B047-A9F2-4533-A6E4-841CC77728A2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EF26B047-A9F2-4533-A6E4-841CC77728A2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EF26B047-A9F2-4533-A6E4-841CC77728A2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3EB6E1CC-846D-4E91-92EF-5E344D00EC49}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3EB6E1CC-846D-4E91-92EF-5E344D00EC49}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3EB6E1CC-846D-4E91-92EF-5E344D00EC49}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3EB6E1CC-846D-4E91-92EF-5E344D00EC49}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
