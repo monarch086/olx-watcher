@@ -112,7 +112,7 @@ public sealed class Function
             return true;
         }
 
-        var nextCheckAt = product.LastCheckedAt.Value.AddDays(7);
+        var nextCheckAt = product.LastCheckedAt.Value.AddDays(1);
         if (nextCheckAt <= DateTimeOffset.UtcNow)
         {
             return true;
