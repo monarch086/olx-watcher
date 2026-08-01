@@ -16,6 +16,7 @@ public static class WatchedProductDynamoMapper
                 ChatId = chatId,
                 ProductUrl = productUrl,
                 ProductId = GetString(item, "productId"),
+                AddedAt = GetDateTimeOffset(item, "addedAt"),
                 ProductName = GetString(item, "productName"),
                 ProductPrice = GetString(item, "productPrice"),
                 IsActive = GetBool(item, "isActive"),

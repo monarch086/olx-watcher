@@ -210,7 +210,9 @@ public sealed class Function
             return "Ви ще не відстежуєте жодного товару. Скористайтеся /watch <URL з OLX>.";
         }
 
-        return FormatWatchedProducts(products);
+        return FormatWatchedProducts(products
+            .OrderBy(product => product.AddedAt)
+            .ToList());
     }
 
     private static string FormatWatchedProducts(IReadOnlyList<WatchedProductDto> products)

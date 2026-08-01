@@ -8,6 +8,8 @@ public sealed class WatchedProductDto
 
     public string? ProductId { get; init; }
 
+    public DateTimeOffset? AddedAt { get; init; }
+
     public string? ProductName { get; init; }
 
     public string? ProductPrice { get; init; }
