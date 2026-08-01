@@ -18,6 +18,7 @@ namespace OlxWatcher.ListingsApi;
 
 public sealed class Function
 {
+    private const string HelpMessage = "Надішліть /watch і URL товару з OLX або ID оголошення, щоб почати відстеження. Також можна просто надіслати URL або ID. Використовуйте /list, щоб переглянути товари.";
     private static readonly HttpClient TelegramClient = new();
     private static readonly HttpClient OlxPageClient = CreateOlxPageClient();
     private readonly IAmazonDynamoDB _dynamoDb;
@@ -83,7 +84,8 @@ public sealed class Function
 
     private async Task<string?> ProcessCommandAsync(string chatId, string text, ILambdaLogger logger)
     {
-        var parts = text.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        var trimmedText = text.Trim();
+        var parts = trimmedText.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
         var command = parts[0].Split('@', 2)[0].ToLowerInvariant();
         logger.LogInformation($"Received Telegram command {command} for chat {chatId}.");
 
@@ -91,10 +93,15 @@ public sealed class Function
         {
             "/watch" => await WatchAsync(chatId, parts.ElementAtOrDefault(1), logger),
             "/list" => await ListAsync(chatId, logger),
-            "/start" or "/help" => "Надішліть /watch і URL товару з OLX або ID оголошення, щоб почати відстеження. Використовуйте /list, щоб переглянути товари.",
-            _ => null
+            "/start" or "/help" => HelpMessage,
+            _ when IsProductReference(trimmedText) => await WatchAsync(chatId, trimmedText, logger),
+            _ => HelpMessage
         };
     }
+
+    private static bool IsProductReference(string value) =>
+        OlxProductPageParser.IsValidProductId(value)
+        || Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps;
 
     private async Task<string> WatchAsync(string chatId, string? urlText, ILambdaLogger logger)
     {
