@@ -10,6 +10,7 @@ using OlxWatcher.Shared;
 using OlxWatcher.Shared.DynamoDb;
 using OlxWatcher.Shared.Dtos;
 using OlxWatcher.Shared.Olx;
+using OlxWatcher.Shared.Telegram;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -30,48 +31,58 @@ public sealed class Function
     public async Task FunctionHandler(CloudWatchEvent<object> scheduledEvent, ILambdaContext context)
     {
         var logger = context.Logger;
-        logger.LogInformation($"Starting scheduled listing check at {DateTimeOffset.UtcNow:O}.");
-
-        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
-        var processed = 0;
-        do
+        try
         {
-            var page = await _dynamoDb.ScanAsync(new ScanRequest
+            logger.LogInformation($"Starting scheduled listing check at {DateTimeOffset.UtcNow:O}.");
+
+            Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
+            var processed = 0;
+            do
             {
-                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-                ExclusiveStartKey = lastEvaluatedKey
-            });
+                var page = await _dynamoDb.ScanAsync(new ScanRequest
+                {
+                    TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
+                    ExclusiveStartKey = lastEvaluatedKey
+                });
 
-            foreach (var item in page.Items)
-            {
-                var product = WatchedProductDynamoMapper.ToWatchedProduct(item);
-                if (product is null)
+                foreach (var item in page.Items)
                 {
-                    logger.LogInformation("Skipping a DynamoDB item without a chat ID or product URL.");
-                    continue;
+                    var product = WatchedProductDynamoMapper.ToWatchedProduct(item);
+                    if (product is null)
+                    {
+                        logger.LogInformation("Skipping a DynamoDB item without a chat ID or product URL.");
+                        continue;
+                    }
+
+                    if (!ShouldCheckProduct(product, logger))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        await CheckProductAsync(product, logger);
+                        processed++;
+                    }
+                    catch (Exception exception)
+                    {
+                        const string errorContext = "Перевірка оголошення";
+                        logger.LogError(exception, $"Unable to check watched product for chat {product.ChatId}.");
+                        await SendErrorNotificationAsync($"{errorContext}, чат {product.ChatId}", exception, logger);
+                    }
                 }
 
-                if (!ShouldCheckProduct(product, logger))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    await CheckProductAsync(product, logger);
-                    processed++;
-                }
-                catch (Exception exception)
-                {
-                    logger.LogError(exception, $"Unable to check watched product for chat {product.ChatId}.");
-                }
+                lastEvaluatedKey = page.LastEvaluatedKey;
             }
+            while (lastEvaluatedKey is { Count: > 0 });
 
-            lastEvaluatedKey = page.LastEvaluatedKey;
+            logger.LogInformation($"Completed scheduled listing check. Processed {processed} watched products.");
         }
-        while (lastEvaluatedKey is { Count: > 0 });
-
-        logger.LogInformation($"Completed scheduled listing check. Processed {processed} watched products.");
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Listings watcher execution failed.");
+            await SendErrorNotificationAsync("Запуск ListingsWatcher", exception, logger);
+        }
     }
 
     private static bool ShouldCheckProduct(WatchedProductDto product, ILambdaLogger logger)
@@ -243,6 +254,14 @@ public sealed class Function
         logger.LogInformation($"Telegram inactive-product notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
         response.EnsureSuccessStatusCode();
     }
+
+    private static Task SendErrorNotificationAsync(string errorContext, Exception exception, ILambdaLogger logger) =>
+        TelegramErrorNotifier.SendErrorNotificationSafelyAsync(
+            HttpClient,
+            "ListingsWatcher",
+            errorContext,
+            exception,
+            logger);
 
     private static async Task<string> FormatPriceAsync(string? price, string? currency, ILambdaLogger logger)
     {
