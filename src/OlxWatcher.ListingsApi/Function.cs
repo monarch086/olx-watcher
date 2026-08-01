@@ -10,6 +10,7 @@ using OlxWatcher.ListingsApi.Dtos;
 using OlxWatcher.Shared;
 using OlxWatcher.Shared.DynamoDb;
 using OlxWatcher.Shared.Dtos;
+using OlxWatcher.Shared.Olx;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -18,6 +19,7 @@ namespace OlxWatcher.ListingsApi;
 public sealed class Function
 {
     private static readonly HttpClient TelegramClient = new();
+    private static readonly HttpClient OlxPageClient = CreateOlxPageClient();
     private readonly IAmazonDynamoDB _dynamoDb;
 
     public Function() : this(new AmazonDynamoDBClient())
@@ -89,16 +91,17 @@ public sealed class Function
         {
             "/watch" => await WatchAsync(chatId, parts.ElementAtOrDefault(1), logger),
             "/list" => await ListAsync(chatId, logger),
-            "/start" or "/help" => "Надішліть /watch і URL товару з OLX, щоб почати відстеження. Використовуйте /list, щоб переглянути товари.",
+            "/start" or "/help" => "Надішліть /watch і URL товару з OLX або ID оголошення, щоб почати відстеження. Використовуйте /list, щоб переглянути товари.",
             _ => null
         };
     }
 
     private async Task<string> WatchAsync(string chatId, string? urlText, ILambdaLogger logger)
     {
-        if (!IsOlxUrl(urlText, out var productUrl))
+        var product = await ResolveOlxProductAsync(urlText, logger);
+        if (product is null)
         {
-            return "Використання: /watch https://www.olx.../product-url";
+            return "Не вдалося визначити ID оголошення. Надішліть коректний URL з OLX або числовий ID оголошення.";
         }
 
         await _dynamoDb.PutItemAsync(new PutItemRequest
@@ -107,7 +110,8 @@ public sealed class Function
             Item = new Dictionary<string, AttributeValue>
             {
                 ["chatId"] = new() { S = chatId },
-                ["productUrl"] = new() { S = productUrl },
+                ["productUrl"] = new() { S = product.Url },
+                ["productId"] = new() { S = product.Id },
                 ["addedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") },
                 ["productName"] = new() { NULL = true },
                 ["productPrice"] = new() { NULL = true },
@@ -116,7 +120,7 @@ public sealed class Function
         });
 
         logger.LogInformation($"Saved a watched product for Telegram chat {chatId}.");
-        return $"Відстежую:\n{productUrl}";
+        return $"Відстежую:\n{product.Url}";
     }
 
     private async Task<string> ListAsync(string chatId, ILambdaLogger logger)
@@ -193,13 +197,23 @@ public sealed class Function
         return string.Equals(suppliedSecret, expectedSecret, StringComparison.Ordinal);
     }
 
-    private static bool IsOlxUrl(string? value, out string productUrl)
+    private static async Task<OlxProductReference?> ResolveOlxProductAsync(string? value, ILambdaLogger logger)
     {
-        productUrl = string.Empty;
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+        var reference = value?.Trim();
+        if (string.IsNullOrEmpty(reference))
+        {
+            return null;
+        }
+
+        if (OlxProductPageParser.IsValidProductId(reference))
+        {
+            return new OlxProductReference(reference, $"https://www.olx.ua/d/uk/{reference}");
+        }
+
+        if (!Uri.TryCreate(reference, UriKind.Absolute, out var uri)
             || uri.Scheme != Uri.UriSchemeHttps)
         {
-            return false;
+            return null;
         }
 
         var host = uri.Host;
@@ -208,12 +222,32 @@ public sealed class Function
             && !host.Contains(".olx.", StringComparison.OrdinalIgnoreCase)
             && !host.EndsWith(".olx", StringComparison.OrdinalIgnoreCase))
         {
-            return false;
+            return null;
         }
 
         var builder = new UriBuilder(uri) { Fragment = string.Empty };
-        productUrl = builder.Uri.AbsoluteUri;
-        return true;
+        var productUrl = builder.Uri.AbsoluteUri;
+        var productId = await GetProductIdFromPageAsync(productUrl, logger);
+        return productId is null ? null : new OlxProductReference(productId, productUrl);
+    }
+
+    private static async Task<string?> GetProductIdFromPageAsync(string productUrl, ILambdaLogger logger)
+    {
+        using var response = await OlxPageClient.GetAsync(productUrl);
+        logger.LogInformation($"OLX product-ID lookup returned HTTP {(int)response.StatusCode}.");
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        return OlxProductPageParser.Parse(await response.Content.ReadAsStringAsync())?.ProductId;
+    }
+
+    private static HttpClient CreateOlxPageClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("OlxWatcher/1.0");
+        return client;
     }
 
     private static string RequiredEnvironmentVariable(string name) =>
@@ -224,5 +258,7 @@ public sealed class Function
     {
         StatusCode = (int)statusCode
     };
+
+    private sealed record OlxProductReference(string Id, string Url);
 
 }

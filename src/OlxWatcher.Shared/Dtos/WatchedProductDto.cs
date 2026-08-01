@@ -6,6 +6,8 @@ public sealed class WatchedProductDto
 
     public required string ProductUrl { get; init; }
 
+    public string? ProductId { get; init; }
+
     public string? ProductName { get; init; }
 
     public string? ProductPrice { get; init; }

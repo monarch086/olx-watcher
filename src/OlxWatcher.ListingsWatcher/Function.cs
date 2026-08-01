@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.CloudWatchEvents;
@@ -10,6 +9,7 @@ using Amazon.Lambda.Core;
 using OlxWatcher.Shared;
 using OlxWatcher.Shared.DynamoDb;
 using OlxWatcher.Shared.Dtos;
+using OlxWatcher.Shared.Olx;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
 
@@ -18,9 +18,6 @@ namespace OlxWatcher.ListingsWatcher;
 public sealed class Function
 {
     private static readonly HttpClient HttpClient = CreateHttpClient();
-    private static readonly Regex ScriptRegex = new(
-        "<script\\b(?<attributes>[^>]*)>(?<content>.*?)</script>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
     private static readonly Uri NbuUsdRateUri = new("https://bank.gov.ua/NBUStatService/v1/statdirectory/exchangenew?json&valcode=USD");
     private readonly IAmazonDynamoDB _dynamoDb;
 
@@ -97,7 +94,7 @@ public sealed class Function
         await UpdateProductAsync(product, actual, logger);
     }
 
-    private async Task<ProductDetails?> GetProductDetailsAsync(string productUrl, ILambdaLogger logger)
+    private async Task<OlxProductDetailsDto?> GetProductDetailsAsync(string productUrl, ILambdaLogger logger)
     {
         using var response = await HttpClient.GetAsync(productUrl);
         logger.LogInformation($"OLX page request returned HTTP {(int)response.StatusCode}.");
@@ -106,33 +103,10 @@ public sealed class Function
             return null;
         }
 
-        var html = await response.Content.ReadAsStringAsync();
-        foreach (Match match in ScriptRegex.Matches(html))
-        {
-            if (!match.Groups["attributes"].Value.Contains("application/ld+json", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            try
-            {
-                using var document = JsonDocument.Parse(match.Groups["content"].Value);
-                var product = FindProduct(document.RootElement);
-                if (product is not null)
-                {
-                    return product;
-                }
-            }
-            catch (JsonException)
-            {
-                // Pages can contain unrelated malformed JSON-LD. Continue to the next script block.
-            }
-        }
-
-        return null;
+        return OlxProductPageParser.Parse(await response.Content.ReadAsStringAsync());
     }
 
-    private async Task UpdateProductAsync(WatchedProductDto product, ProductDetails actual, ILambdaLogger logger)
+    private async Task UpdateProductAsync(WatchedProductDto product, OlxProductDetailsDto actual, ILambdaLogger logger)
     {
         var assignments = new List<string>
         {
@@ -170,7 +144,7 @@ public sealed class Function
 
     private static async Task SendProductChangeAsync(
         WatchedProductDto product,
-        ProductDetails actual,
+        OlxProductDetailsDto actual,
         bool nameChanged,
         bool priceChanged,
         ILambdaLogger logger)
@@ -261,98 +235,6 @@ public sealed class Function
         return amount / uahPerUsd;
     }
 
-    private static ProductDetails? FindProduct(JsonElement element)
-    {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            if (HasProductType(element))
-            {
-                var details = CreateProductDetails(element);
-                if (details is not null)
-                {
-                    return details;
-                }
-            }
-
-            foreach (var property in element.EnumerateObject())
-            {
-                var nestedProduct = FindProduct(property.Value);
-                if (nestedProduct is not null)
-                {
-                    return nestedProduct;
-                }
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in element.EnumerateArray())
-            {
-                var nestedProduct = FindProduct(item);
-                if (nestedProduct is not null)
-                {
-                    return nestedProduct;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static bool HasProductType(JsonElement element)
-    {
-        if (!element.TryGetProperty("@type", out var type))
-        {
-            return false;
-        }
-
-        return type.ValueKind switch
-        {
-            JsonValueKind.String => string.Equals(type.GetString(), "Product", StringComparison.OrdinalIgnoreCase),
-            JsonValueKind.Array => type.EnumerateArray().Any(item => item.ValueKind == JsonValueKind.String
-                && string.Equals(item.GetString(), "Product", StringComparison.OrdinalIgnoreCase)),
-            _ => false
-        };
-    }
-
-    private static ProductDetails? CreateProductDetails(JsonElement product)
-    {
-        var name = GetJsonString(product, "name");
-        var (price, currency) = TryGetOffer(product);
-        return name is null && price is null ? null : new ProductDetails(name, price, currency);
-    }
-
-    private static (string? Price, string? Currency) TryGetOffer(JsonElement product)
-    {
-        if (!product.TryGetProperty("offers", out var offers))
-        {
-            return (null, null);
-        }
-
-        if (offers.ValueKind == JsonValueKind.Array)
-        {
-            offers = offers.EnumerateArray().FirstOrDefault();
-        }
-
-        return offers.ValueKind == JsonValueKind.Object
-            ? (GetJsonString(offers, "price"), GetJsonString(offers, "priceCurrency"))
-            : (null, null);
-    }
-
-    private static string? GetJsonString(JsonElement element, string propertyName)
-    {
-        if (!element.TryGetProperty(propertyName, out var value))
-        {
-            return null;
-        }
-
-        return value.ValueKind switch
-        {
-            JsonValueKind.String => value.GetString()?.Trim(),
-            JsonValueKind.Number => value.GetRawText(),
-            _ => null
-        };
-    }
-
     private static HttpClient CreateHttpClient()
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
@@ -363,7 +245,5 @@ public sealed class Function
     private static string RequiredEnvironmentVariable(string name) =>
         Environment.GetEnvironmentVariable(name)
         ?? throw new InvalidOperationException($"Required environment variable {name} is not set.");
-
-    private sealed record ProductDetails(string? Name, string? Price, string? Currency);
 
 }
