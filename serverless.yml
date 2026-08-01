@@ -50,13 +50,43 @@ functions:
     timeout: 300
     package:
       artifact: src/OlxWatcher.ListingsWatcher/publish/listings-watcher.zip
-    events:
-      - schedule:
-          rate: cron(0 * * * ? *)
-          enabled: true
 
 resources:
   Resources:
+    ListingsWatcherScheduleRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: scheduler.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: InvokeListingsWatcher
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource:
+                    Fn::GetAtt: [ListingsWatcherLambdaFunction, Arn]
+    ListingsWatcherSchedule:
+      Type: AWS::Scheduler::Schedule
+      Properties:
+        Name: ${self:service}-${sls:stage}-listings-watcher
+        Description: Checks watched OLX listings hourly during Kyiv daytime.
+        FlexibleTimeWindow:
+          Mode: 'OFF'
+        ScheduleExpression: cron(0 7-23 * * ? *)
+        ScheduleExpressionTimezone: Europe/Kyiv
+        State: ENABLED
+        Target:
+          Arn:
+            Fn::GetAtt: [ListingsWatcherLambdaFunction, Arn]
+          RoleArn:
+            Fn::GetAtt: [ListingsWatcherScheduleRole, Arn]
     WatchedProductsTable:
       Type: AWS::DynamoDB::Table
       Properties:
