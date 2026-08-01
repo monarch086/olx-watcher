@@ -25,6 +25,8 @@ provider:
           Action:
             - dynamodb:PutItem
             - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:UpdateItem
           Resource:
             - Fn::GetAtt: [WatchedProductsTable, Arn]
 
@@ -44,7 +46,7 @@ functions:
   listingsWatcher:
     handler: OlxWatcher.ListingsWatcher::OlxWatcher.ListingsWatcher.Function::FunctionHandler
     description: Periodically checks OLX listings.
-    timeout: 60
+    timeout: 300
     package:
       artifact: src/OlxWatcher.ListingsWatcher/publish/listings-watcher.zip
     events:
