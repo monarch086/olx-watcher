@@ -37,6 +37,8 @@ public sealed class Function
 
             Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
             var processed = 0;
+            var maxConcurrency = GetMaxCheckConcurrency();
+            logger.LogInformation($"Checking watched products with a maximum concurrency of {maxConcurrency}.");
             do
             {
                 var page = await _dynamoDb.ScanAsync(new ScanRequest
@@ -45,32 +47,35 @@ public sealed class Function
                     ExclusiveStartKey = lastEvaluatedKey
                 });
 
-                foreach (var item in page.Items)
-                {
-                    var product = WatchedProductDynamoMapper.ToWatchedProduct(item);
-                    if (product is null)
+                await Parallel.ForEachAsync(
+                    page.Items,
+                    new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency },
+                    async (item, _) =>
                     {
-                        logger.LogInformation("Skipping a DynamoDB item without a chat ID or product URL.");
-                        continue;
-                    }
+                        var product = WatchedProductDynamoMapper.ToWatchedProduct(item);
+                        if (product is null)
+                        {
+                            logger.LogInformation("Skipping a DynamoDB item without a chat ID or product URL.");
+                            return;
+                        }
 
-                    if (!ShouldCheckProduct(product, logger))
-                    {
-                        continue;
-                    }
+                        if (!ShouldCheckProduct(product, logger))
+                        {
+                            return;
+                        }
 
-                    try
-                    {
-                        await CheckProductAsync(product, logger);
-                        processed++;
-                    }
-                    catch (Exception exception)
-                    {
-                        const string errorContext = "Перевірка оголошення";
-                        logger.LogError(exception, $"Unable to check watched product for chat {product.ChatId}.");
-                        await SendErrorNotificationAsync($"{errorContext}, чат {product.ChatId}", exception, logger);
-                    }
-                }
+                        try
+                        {
+                            await CheckProductAsync(product, logger);
+                            Interlocked.Increment(ref processed);
+                        }
+                        catch (Exception exception)
+                        {
+                            const string errorContext = "Перевірка оголошення";
+                            logger.LogError(exception, $"Unable to check watched product for chat {product.ChatId}.");
+                            await SendErrorNotificationAsync($"{errorContext}, чат {product.ChatId}", exception, logger);
+                        }
+                    });
 
                 lastEvaluatedKey = page.LastEvaluatedKey;
             }
@@ -100,6 +105,16 @@ public sealed class Function
 
         logger.LogInformation($"Skipping inactive watched product for Telegram chat {product.ChatId} until {nextCheckAt:O}.");
         return false;
+    }
+
+    private static int GetMaxCheckConcurrency()
+    {
+        const int defaultConcurrency = 5;
+        const int maxAllowedConcurrency = 20;
+        var value = Environment.GetEnvironmentVariable("WATCHER_MAX_CONCURRENCY");
+        return int.TryParse(value, out var concurrency) && concurrency is > 0 and <= maxAllowedConcurrency
+            ? concurrency
+            : defaultConcurrency;
     }
 
     private async Task CheckProductAsync(WatchedProductDto product, ILambdaLogger logger)
