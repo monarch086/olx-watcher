@@ -285,7 +285,7 @@ public sealed class ListingsWatcherService
     }
 
     private static Task SendErrorNotificationAsync(string errorContext, Exception exception, ILambdaLogger logger) =>
-        TelegramErrorNotifier.SendErrorNotificationSafelyAsync(
+        TelegramServiceNotifier.SendErrorNotificationSafelyAsync(
             HttpClient,
             "ListingsWatcher",
             errorContext,

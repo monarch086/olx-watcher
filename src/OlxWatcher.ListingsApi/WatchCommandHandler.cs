@@ -153,6 +153,14 @@ public sealed class WatchCommandHandler
         logger.LogInformation($"Saved a watched product for Telegram chat {chatId}. Name and price resolved: {product.Name is not null}/{product.Price is not null}.");
         var productName = product.Name ?? "Без назви";
         var productPrice = product.Price is null ? "не вказано" : PriceFormatter.FormatUah(product.Price);
+        await TelegramServiceNotifier.SendWatchAddedNotificationSafelyAsync(
+            TelegramClient,
+            "ListingsApi",
+            chatId,
+            productName,
+            productPrice,
+            product.Url,
+            logger);
         return $"Відстежую:\n{productName}\nЦіна: {productPrice}\n{product.Url}";
     }
 
