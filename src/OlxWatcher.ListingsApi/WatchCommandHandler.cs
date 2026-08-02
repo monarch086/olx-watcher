@@ -11,26 +11,32 @@ using OlxWatcher.Shared;
 using OlxWatcher.Shared.DynamoDb;
 using OlxWatcher.Shared.Dtos;
 using OlxWatcher.Shared.Olx;
-
-[assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
+using OlxWatcher.Shared.Telegram;
 
 namespace OlxWatcher.ListingsApi;
 
-public sealed class Function
+public sealed class WatchCommandHandler
 {
     private const string HelpMessage = "Надішліть /watch і URL товару з OLX або ID оголошення, щоб почати відстеження. Також можна просто надіслати URL або ID. Використовуйте /list, щоб переглянути товари.";
     private const int MaxProductsPerUser = 20;
     private static readonly HttpClient TelegramClient = new();
     private static readonly HttpClient OlxPageClient = CreateOlxPageClient();
-    private readonly IAmazonDynamoDB _dynamoDb;
+    private readonly WatchedProductRepository _watchedProducts;
+    private readonly OlxProductClient _olxProductClient;
+    private readonly TelegramBotClient _telegramBotClient;
 
-    public Function() : this(new AmazonDynamoDBClient())
+    public WatchCommandHandler() : this(new AmazonDynamoDBClient())
     {
     }
 
-    internal Function(IAmazonDynamoDB dynamoDb) => _dynamoDb = dynamoDb;
+    internal WatchCommandHandler(IAmazonDynamoDB dynamoDb)
+    {
+        _watchedProducts = new WatchedProductRepository(dynamoDb, RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"));
+        _olxProductClient = new OlxProductClient(OlxPageClient);
+        _telegramBotClient = new TelegramBotClient(TelegramClient);
+    }
 
-    public async Task<APIGatewayHttpApiV2ProxyResponse> FunctionHandler(
+    public async Task<APIGatewayHttpApiV2ProxyResponse> ProcessWebhookAsync(
         APIGatewayHttpApiV2ProxyRequest request,
         ILambdaContext context)
     {
@@ -112,13 +118,14 @@ public sealed class Function
             return "Не вдалося визначити ID оголошення. Надішліть коректний URL з OLX або числовий ID оголошення.";
         }
 
-        if (await IsProductAlreadyWatchedAsync(chatId, product.Id))
+        var watchedProducts = await _watchedProducts.GetByChatIdAsync(chatId);
+        if (watchedProducts.Any(watchedProduct => string.Equals(watchedProduct.ProductId, product.Id, StringComparison.Ordinal)))
         {
             logger.LogInformation($"Product ID {product.Id} is already watched for Telegram chat {chatId}.");
             return "Ви вже відстежуєте це оголошення.";
         }
 
-        if (await GetProductCountAsync(chatId) >= MaxProductsPerUser)
+        if (watchedProducts.Count >= MaxProductsPerUser)
         {
             logger.LogInformation($"Telegram chat {chatId} has reached the watched-products limit.");
             return $"Ви можете відстежувати не більше {MaxProductsPerUser} оголошень.";
@@ -126,20 +133,15 @@ public sealed class Function
 
         try
         {
-            await _dynamoDb.PutItemAsync(new PutItemRequest
+            await _watchedProducts.AddAsync(new WatchedProductDto
             {
-                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-                ConditionExpression = "attribute_not_exists(chatId) AND attribute_not_exists(productUrl)",
-                Item = new Dictionary<string, AttributeValue>
-                {
-                    ["chatId"] = new() { S = chatId },
-                    ["productUrl"] = new() { S = product.Url },
-                    ["productId"] = new() { S = product.Id },
-                    ["addedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") },
-                    ["productName"] = NullableString(product.Name),
-                    ["productPrice"] = NullableString(product.Price),
-                    ["isActive"] = new() { BOOL = true }
-                }
+                ChatId = chatId,
+                ProductUrl = product.Url,
+                ProductId = product.Id,
+                AddedAt = DateTimeOffset.UtcNow,
+                ProductName = product.Name,
+                ProductPrice = product.Price,
+                IsActive = true
             });
         }
         catch (ConditionalCheckFailedException)
@@ -154,89 +156,9 @@ public sealed class Function
         return $"Відстежую:\n{productName}\nЦіна: {productPrice}\n{product.Url}";
     }
 
-    private async Task<bool> IsProductAlreadyWatchedAsync(string chatId, string productId)
-    {
-        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
-        do
-        {
-            var response = await _dynamoDb.QueryAsync(new QueryRequest
-            {
-                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-                KeyConditionExpression = "chatId = :chatId",
-                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
-                {
-                    [":chatId"] = new() { S = chatId }
-                },
-                ExclusiveStartKey = lastEvaluatedKey
-            });
-
-            if (response.Items
-                .Select(WatchedProductDynamoMapper.ToWatchedProduct)
-                .OfType<WatchedProductDto>()
-                .Any(watchedProduct => string.Equals(watchedProduct.ProductId, productId, StringComparison.Ordinal)))
-            {
-                return true;
-            }
-
-            lastEvaluatedKey = response.LastEvaluatedKey;
-        }
-        while (lastEvaluatedKey is { Count: > 0 });
-
-        return false;
-    }
-
-    private async Task<int> GetProductCountAsync(string chatId)
-    {
-        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
-        var count = 0;
-        do
-        {
-            var response = await _dynamoDb.QueryAsync(new QueryRequest
-            {
-                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-                KeyConditionExpression = "chatId = :chatId",
-                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
-                {
-                    [":chatId"] = new() { S = chatId }
-                },
-                ExclusiveStartKey = lastEvaluatedKey
-            });
-
-            count += response.Items
-                .Select(WatchedProductDynamoMapper.ToWatchedProduct)
-                .OfType<WatchedProductDto>()
-                .Count();
-            lastEvaluatedKey = response.LastEvaluatedKey;
-        }
-        while (lastEvaluatedKey is { Count: > 0 });
-
-        return count;
-    }
-
     private async Task<string> ListAsync(string chatId, ILambdaLogger logger)
     {
-        var products = new List<WatchedProductDto>();
-        Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
-
-        do
-        {
-            var response = await _dynamoDb.QueryAsync(new QueryRequest
-            {
-                TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-                KeyConditionExpression = "chatId = :chatId",
-                ExpressionAttributeValues = new Dictionary<string, AttributeValue>
-                {
-                    [":chatId"] = new() { S = chatId }
-                },
-                ExclusiveStartKey = lastEvaluatedKey
-            });
-
-            products.AddRange(response.Items
-                .Select(WatchedProductDynamoMapper.ToWatchedProduct)
-                .OfType<WatchedProductDto>());
-            lastEvaluatedKey = response.LastEvaluatedKey;
-        }
-        while (lastEvaluatedKey is { Count: > 0 });
+        var products = await _watchedProducts.GetByChatIdAsync(chatId);
 
         logger.LogInformation($"Retrieved {products.Count} watched products for Telegram chat {chatId}.");
 
@@ -262,14 +184,11 @@ public sealed class Function
         return responseText.Length <= 4096 ? responseText : responseText[..4093] + "...";
     }
 
-    private static async Task SendTelegramMessageAsync(string chatId, string text, ILambdaLogger logger)
+    private async Task SendTelegramMessageAsync(string chatId, string text, ILambdaLogger logger)
     {
         var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
-        using var response = await TelegramClient.PostAsJsonAsync(
-            $"https://api.telegram.org/bot{token}/sendMessage",
-            new { chat_id = chatId, text });
-        logger.LogInformation($"Telegram sendMessage returned HTTP {(int)response.StatusCode} for chat {chatId}.");
-        response.EnsureSuccessStatusCode();
+        await _telegramBotClient.SendMessageAsync(token, chatId, text);
+        logger.LogInformation($"Telegram sendMessage completed for chat {chatId}.");
     }
 
     private static bool HasValidWebhookSecret(APIGatewayHttpApiV2ProxyRequest request)
@@ -290,7 +209,7 @@ public sealed class Function
         return string.Equals(suppliedSecret, expectedSecret, StringComparison.Ordinal);
     }
 
-    private static async Task<OlxProductReference?> ResolveOlxProductAsync(string? value, ILambdaLogger logger)
+    private async Task<OlxProductReference?> ResolveOlxProductAsync(string? value, ILambdaLogger logger)
     {
         var reference = value?.Trim();
         if (string.IsNullOrEmpty(reference))
@@ -338,15 +257,13 @@ public sealed class Function
             : new OlxProductReference(productDetails.ProductId, productUrl, productDetails.Name, productDetails.Price);
     }
 
-    private static async Task<OlxProductDetailsDto?> TryGetProductDetailsFromPageAsync(string productUrl, ILambdaLogger logger)
+    private async Task<OlxProductDetailsDto?> TryGetProductDetailsFromPageAsync(string productUrl, ILambdaLogger logger)
     {
         try
         {
-            using var response = await OlxPageClient.GetAsync(productUrl);
-            logger.LogInformation($"OLX product lookup returned HTTP {(int)response.StatusCode}.");
-            return response.IsSuccessStatusCode
-                ? OlxProductPageParser.Parse(await response.Content.ReadAsStringAsync())
-                : null;
+            var product = await _olxProductClient.GetProductDetailsAsync(productUrl);
+            logger.LogInformation($"OLX product lookup completed. Product metadata found: {product is not null}.");
+            return product;
         }
         catch (HttpRequestException exception)
         {
@@ -359,10 +276,6 @@ public sealed class Function
             return null;
         }
     }
-
-    private static AttributeValue NullableString(string? value) => value is null
-        ? new AttributeValue { NULL = true }
-        : new AttributeValue { S = value };
 
     private static HttpClient CreateOlxPageClient()
     {

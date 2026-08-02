@@ -3,7 +3,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Amazon.DynamoDBv2;
-using Amazon.DynamoDBv2.Model;
 using Amazon.Lambda.CloudWatchEvents;
 using Amazon.Lambda.Core;
 using OlxWatcher.Shared;
@@ -12,55 +11,37 @@ using OlxWatcher.Shared.Dtos;
 using OlxWatcher.Shared.Olx;
 using OlxWatcher.Shared.Telegram;
 
-[assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
-
 namespace OlxWatcher.ListingsWatcher;
 
-public sealed class Function
+public sealed class ListingsWatcherService
 {
     private static readonly HttpClient HttpClient = CreateHttpClient();
     private static readonly Uri NbuUsdRateUri = new("https://bank.gov.ua/NBUStatService/v1/statdirectory/exchangenew?json&valcode=USD");
-    private readonly IAmazonDynamoDB _dynamoDb;
+    private readonly WatchedProductRepository _watchedProducts;
+    private readonly ProductPriceHistoryRepository _priceHistory;
+    private readonly OlxProductClient _olxProductClient;
+    private readonly TelegramBotClient _telegramBotClient;
 
-    public Function() : this(new AmazonDynamoDBClient())
+    public ListingsWatcherService() : this(new AmazonDynamoDBClient())
     {
     }
 
-    internal Function(IAmazonDynamoDB dynamoDb) => _dynamoDb = dynamoDb;
+    internal ListingsWatcherService(IAmazonDynamoDB dynamoDb)
+    {
+        _watchedProducts = new WatchedProductRepository(dynamoDb, RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"));
+        _priceHistory = new ProductPriceHistoryRepository(dynamoDb, RequiredEnvironmentVariable("PRODUCT_PRICE_HISTORY_TABLE"));
+        _olxProductClient = new OlxProductClient(HttpClient);
+        _telegramBotClient = new TelegramBotClient(HttpClient);
+    }
 
-    public async Task FunctionHandler(CloudWatchEvent<object> scheduledEvent, ILambdaContext context)
+    public async Task RunAsync(CloudWatchEvent<object> scheduledEvent, ILambdaContext context)
     {
         var logger = context.Logger;
         try
         {
             logger.LogInformation($"Starting scheduled listing check at {DateTimeOffset.UtcNow:O}.");
 
-            Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
-            var watchedProducts = new List<WatchedProductDto>();
-            var tableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE");
-            do
-            {
-                var page = await _dynamoDb.ScanAsync(new ScanRequest
-                {
-                    TableName = tableName,
-                    ExclusiveStartKey = lastEvaluatedKey
-                });
-
-                foreach (var item in page.Items)
-                {
-                    var product = WatchedProductDynamoMapper.ToWatchedProduct(item);
-                    if (product is null)
-                    {
-                        logger.LogInformation("Skipping a DynamoDB item without a chat ID or product URL.");
-                        continue;
-                    }
-
-                    watchedProducts.Add(product);
-                }
-
-                lastEvaluatedKey = page.LastEvaluatedKey;
-            }
-            while (lastEvaluatedKey is { Count: > 0 });
+            var watchedProducts = await _watchedProducts.GetAllAsync();
 
             var productGroups = watchedProducts
                 .GroupBy(product => string.IsNullOrWhiteSpace(product.ProductId)
@@ -188,86 +169,33 @@ public sealed class Function
 
     private async Task<OlxProductDetailsDto?> GetProductDetailsAsync(string productUrl, ILambdaLogger logger)
     {
-        using var response = await HttpClient.GetAsync(productUrl);
-        logger.LogInformation($"OLX page request returned HTTP {(int)response.StatusCode}.");
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        return OlxProductPageParser.Parse(await response.Content.ReadAsStringAsync());
+        var product = await _olxProductClient.GetProductDetailsAsync(productUrl);
+        logger.LogInformation($"OLX page request completed. Product metadata found: {product is not null}.");
+        return product;
     }
 
     private async Task UpdateProductAsync(WatchedProductDto product, OlxProductDetailsDto actual, ILambdaLogger logger)
     {
-        var assignments = new List<string>
-        {
-            "isActive = :isActive",
-            "lastCheckedAt = :lastCheckedAt"
-        };
-        var values = new Dictionary<string, AttributeValue>
-        {
-            [":isActive"] = new() { BOOL = true },
-            [":lastCheckedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") }
-        };
-
-        if (actual.Name is not null)
-        {
-            assignments.Add("productName = :productName");
-            values[":productName"] = new AttributeValue { S = actual.Name };
-        }
-
-        if (actual.Price is not null)
-        {
-            assignments.Add("productPrice = :productPrice");
-            values[":productPrice"] = new AttributeValue { S = actual.Price };
-        }
-
-        await _dynamoDb.UpdateItemAsync(new UpdateItemRequest
-        {
-            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-            Key = WatchedProductDynamoMapper.CreateKey(product),
-            UpdateExpression = $"SET {string.Join(", ", assignments)}",
-            ExpressionAttributeValues = values
-        });
+        await _watchedProducts.UpdateFromOlxAsync(product, actual, DateTimeOffset.UtcNow);
 
         logger.LogInformation($"Updated watched product metadata for Telegram chat {product.ChatId}.");
     }
 
     private async Task UpdateProductActivityAsync(WatchedProductDto product, bool isActive, ILambdaLogger logger)
     {
-        await _dynamoDb.UpdateItemAsync(new UpdateItemRequest
-        {
-            TableName = RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"),
-            Key = WatchedProductDynamoMapper.CreateKey(product),
-            UpdateExpression = "SET isActive = :isActive, lastCheckedAt = :lastCheckedAt",
-            ExpressionAttributeValues = new Dictionary<string, AttributeValue>
-            {
-                [":isActive"] = new() { BOOL = isActive },
-                [":lastCheckedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") }
-            }
-        });
+        await _watchedProducts.UpdateActivityAsync(product, isActive, DateTimeOffset.UtcNow);
 
         logger.LogInformation($"Updated watched product activity to {isActive} for Telegram chat {product.ChatId}.");
     }
 
     private async Task RecordPriceChangeAsync(string productId, string productPrice, ILambdaLogger logger)
     {
-        var changeDate = DateTimeOffset.UtcNow.ToString("O");
-        await _dynamoDb.PutItemAsync(new PutItemRequest
-        {
-            TableName = RequiredEnvironmentVariable("PRODUCT_PRICE_HISTORY_TABLE"),
-            Item = new Dictionary<string, AttributeValue>
-            {
-                ["productId"] = new() { S = productId },
-                ["productPrice"] = new() { S = productPrice },
-                ["changeDate"] = new() { S = changeDate }
-            }
-        });
-        logger.LogInformation($"Recorded a price change for product {productId} at {changeDate}.");
+        var changeDate = DateTimeOffset.UtcNow;
+        await _priceHistory.RecordAsync(productId, productPrice, changeDate);
+        logger.LogInformation($"Recorded a price change for product {productId} at {changeDate:O}.");
     }
 
-    private static async Task SendProductChangeAsync(
+    private async Task SendProductChangeAsync(
         WatchedProductDto product,
         OlxProductDetailsDto actual,
         bool nameChanged,
@@ -289,54 +217,27 @@ public sealed class Function
 
         var productName = actual.Name ?? product.ProductName ?? "OLX product";
         var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
-        using var response = await HttpClient.PostAsJsonAsync(
-            $"https://api.telegram.org/bot{token}/sendMessage",
-            new
-            {
-                chat_id = product.ChatId,
-                text = $"<b>{WebUtility.HtmlEncode(productName)}</b>\n{string.Join('\n', changes)}\n{WebUtility.HtmlEncode(product.ProductUrl)}",
-                parse_mode = "HTML",
-                disable_web_page_preview = true
-            });
-        logger.LogInformation($"Telegram product-change notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
-        response.EnsureSuccessStatusCode();
+        await _telegramBotClient.SendMessageAsync(token, product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\n{string.Join('\n', changes)}\n{WebUtility.HtmlEncode(product.ProductUrl)}", "HTML", true);
+        logger.LogInformation($"Telegram product-change notification completed for chat {product.ChatId}.");
     }
 
-    private static async Task SendProductInactiveAsync(WatchedProductDto product, ILambdaLogger logger)
+    private async Task SendProductInactiveAsync(WatchedProductDto product, ILambdaLogger logger)
     {
         var productName = product.ProductName ?? "Оголошення OLX";
         var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
-        using var response = await HttpClient.PostAsJsonAsync(
-            $"https://api.telegram.org/bot{token}/sendMessage",
-            new
-            {
-                chat_id = product.ChatId,
-                text = $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення більше неактивне.\n{WebUtility.HtmlEncode(product.ProductUrl)}",
-                parse_mode = "HTML",
-                disable_web_page_preview = true
-            });
-        logger.LogInformation($"Telegram inactive-product notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
-        response.EnsureSuccessStatusCode();
+        await _telegramBotClient.SendMessageAsync(token, product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення більше неактивне.\n{WebUtility.HtmlEncode(product.ProductUrl)}", "HTML", true);
+        logger.LogInformation($"Telegram inactive-product notification completed for chat {product.ChatId}.");
     }
 
-    private static async Task SendProductReactivatedAsync(
+    private async Task SendProductReactivatedAsync(
         WatchedProductDto product,
         OlxProductDetailsDto actual,
         ILambdaLogger logger)
     {
         var productName = actual.Name ?? product.ProductName ?? "Оголошення OLX";
         var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
-        using var response = await HttpClient.PostAsJsonAsync(
-            $"https://api.telegram.org/bot{token}/sendMessage",
-            new
-            {
-                chat_id = product.ChatId,
-                text = $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення знову активне.\n{WebUtility.HtmlEncode(product.ProductUrl)}",
-                parse_mode = "HTML",
-                disable_web_page_preview = true
-            });
-        logger.LogInformation($"Telegram reactivated-product notification returned HTTP {(int)response.StatusCode} for chat {product.ChatId}.");
-        response.EnsureSuccessStatusCode();
+        await _telegramBotClient.SendMessageAsync(token, product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення знову активне.\n{WebUtility.HtmlEncode(product.ProductUrl)}", "HTML", true);
+        logger.LogInformation($"Telegram reactivated-product notification completed for chat {product.ChatId}.");
     }
 
     private static Task SendErrorNotificationAsync(string errorContext, Exception exception, ILambdaLogger logger) =>
