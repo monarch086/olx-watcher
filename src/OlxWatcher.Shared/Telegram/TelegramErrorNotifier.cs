@@ -17,8 +17,8 @@ public static class TelegramErrorNotifier
     {
         try
         {
-            var telegramBotToken = Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN")
-                ?? throw new InvalidOperationException("Required environment variable TELEGRAM_BOT_TOKEN is not set.");
+            var serviceBotToken = Environment.GetEnvironmentVariable("TELEGRAM_SERVICE_BOT_TOKEN")
+                ?? throw new InvalidOperationException("Required environment variable TELEGRAM_SERVICE_BOT_TOKEN is not set.");
             var rawDetails = exception.ToString();
             if (rawDetails.Length > 2_500)
             {
@@ -27,7 +27,7 @@ public static class TelegramErrorNotifier
 
             var text = $"<b>Помилка {WebUtility.HtmlEncode(serviceName)}</b>\n<b>Етап:</b> {WebUtility.HtmlEncode(errorContext)}\n<pre>{WebUtility.HtmlEncode(rawDetails)}</pre>";
             using var response = await httpClient.PostAsJsonAsync(
-                $"https://api.telegram.org/bot{telegramBotToken}/sendMessage",
+                $"https://api.telegram.org/bot{serviceBotToken}/sendMessage",
                 new
                 {
                     chat_id = ErrorNotificationChatId,

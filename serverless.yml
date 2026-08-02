@@ -20,6 +20,7 @@ provider:
     TELEGRAM_NOTIFICATION_OUTBOX_TABLE: ${self:service}-${sls:stage}-telegram-notification-outbox
     WATCHER_MAX_CONCURRENCY: 5
     TELEGRAM_BOT_TOKEN: ${ssm:/olx-watcher/${sls:stage}/telegram-bot-token}
+    TELEGRAM_SERVICE_BOT_TOKEN: ${ssm:/shared/telegram/service-bot-token}
     TELEGRAM_WEBHOOK_SECRET: ${ssm:/olx-watcher/${sls:stage}/telegram-webhook-secret}
   iam:
     role:
