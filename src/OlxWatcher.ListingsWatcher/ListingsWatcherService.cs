@@ -327,6 +327,7 @@ public sealed class ListingsWatcherService
         catch (Exception exception)
         {
             logger.LogInformation($"Could not retrieve an exchange rate for {currencyCode}: {exception.Message}");
+            await SendErrorNotificationAsync($"Отримання курсу валют {currencyCode}", exception, logger);
             return $"{formatted} {WebUtility.HtmlEncode(currencyCode)}";
         }
     }

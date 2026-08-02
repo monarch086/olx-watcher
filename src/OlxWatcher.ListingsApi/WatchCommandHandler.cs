@@ -83,6 +83,7 @@ public sealed class WatchCommandHandler
         catch (Exception exception)
         {
             context.Logger.LogError(exception, "Unable to process Telegram update.");
+            await SendErrorNotificationAsync($"Обробка Telegram update {update?.UpdateId}", exception, context.Logger);
             return Response(HttpStatusCode.InternalServerError);
         }
 
@@ -276,11 +277,13 @@ public sealed class WatchCommandHandler
         catch (HttpRequestException exception)
         {
             logger.LogInformation($"OLX product lookup failed: {exception.Message}");
+            await SendErrorNotificationAsync("Отримання даних оголошення OLX", exception, logger);
             return null;
         }
         catch (TaskCanceledException exception)
         {
             logger.LogInformation($"OLX product lookup timed out: {exception.Message}");
+            await SendErrorNotificationAsync("Отримання даних оголошення OLX", exception, logger);
             return null;
         }
     }
@@ -295,6 +298,14 @@ public sealed class WatchCommandHandler
     private static string RequiredEnvironmentVariable(string name) =>
         Environment.GetEnvironmentVariable(name)
         ?? throw new InvalidOperationException($"Required environment variable {name} is not set.");
+
+    private static Task SendErrorNotificationAsync(string errorContext, Exception exception, ILambdaLogger logger) =>
+        TelegramServiceNotifier.SendErrorNotificationSafelyAsync(
+            TelegramClient,
+            "ListingsApi",
+            errorContext,
+            exception,
+            logger);
 
     private static APIGatewayHttpApiV2ProxyResponse Response(HttpStatusCode statusCode) => new()
     {
