@@ -19,6 +19,7 @@ public sealed class ListingsWatcherService
     private static readonly Uri NbuUsdRateUri = new("https://bank.gov.ua/NBUStatService/v1/statdirectory/exchangenew?json&valcode=USD");
     private readonly WatchedProductRepository _watchedProducts;
     private readonly ProductPriceHistoryRepository _priceHistory;
+    private readonly TelegramNotificationOutboxRepository _notificationOutbox;
     private readonly OlxProductClient _olxProductClient;
     private readonly TelegramBotClient _telegramBotClient;
 
@@ -30,6 +31,7 @@ public sealed class ListingsWatcherService
     {
         _watchedProducts = new WatchedProductRepository(dynamoDb, RequiredEnvironmentVariable("WATCHED_PRODUCTS_TABLE"));
         _priceHistory = new ProductPriceHistoryRepository(dynamoDb, RequiredEnvironmentVariable("PRODUCT_PRICE_HISTORY_TABLE"));
+        _notificationOutbox = new TelegramNotificationOutboxRepository(dynamoDb, RequiredEnvironmentVariable("TELEGRAM_NOTIFICATION_OUTBOX_TABLE"));
         _olxProductClient = new OlxProductClient(HttpClient);
         _telegramBotClient = new TelegramBotClient(HttpClient);
     }
@@ -76,6 +78,8 @@ public sealed class ListingsWatcherService
                         await SendErrorNotificationAsync($"Перевірка оголошення {productId}", exception, logger);
                     }
                 });
+
+            await DeliverPendingNotificationsAsync(logger);
 
             logger.LogInformation($"Completed scheduled listing check. Processed {processed} watched products.");
         }
@@ -139,7 +143,9 @@ public sealed class ListingsWatcherService
             {
                 if (product.IsActive is not false)
                 {
-                    await SendProductInactiveAsync(product, logger);
+                    await UpdateProductActivityAsync(product, false, logger);
+                    await QueueProductInactiveNotificationAsync(product, logger);
+                    continue;
                 }
 
                 await UpdateProductActivityAsync(product, false, logger);
@@ -155,12 +161,21 @@ public sealed class ListingsWatcherService
 
             if (product.IsActive is false)
             {
-                await SendProductReactivatedAsync(product, actual, logger);
+                await UpdateProductAsync(product, actual, logger);
+                await QueueProductReactivatedNotificationAsync(product, actual, logger);
+                if (nameChanged || priceChanged)
+                {
+                    await QueueProductChangeNotificationAsync(product, actual, nameChanged, priceChanged, logger);
+                }
+
+                continue;
             }
 
             if (nameChanged || priceChanged)
             {
-                await SendProductChangeAsync(product, actual, nameChanged, priceChanged, logger);
+                await UpdateProductAsync(product, actual, logger);
+                await QueueProductChangeNotificationAsync(product, actual, nameChanged, priceChanged, logger);
+                continue;
             }
 
             await UpdateProductAsync(product, actual, logger);
@@ -195,7 +210,7 @@ public sealed class ListingsWatcherService
         logger.LogInformation($"Recorded a price change for product {productId} at {changeDate:O}.");
     }
 
-    private async Task SendProductChangeAsync(
+    private async Task QueueProductChangeNotificationAsync(
         WatchedProductDto product,
         OlxProductDetailsDto actual,
         bool nameChanged,
@@ -216,28 +231,57 @@ public sealed class ListingsWatcherService
         }
 
         var productName = actual.Name ?? product.ProductName ?? "OLX product";
-        var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
-        await _telegramBotClient.SendMessageAsync(token, product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\n{string.Join('\n', changes)}\n{WebUtility.HtmlEncode(product.ProductUrl)}", "HTML", true);
-        logger.LogInformation($"Telegram product-change notification completed for chat {product.ChatId}.");
+        await EnqueueNotificationAsync(product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\n{string.Join('\n', changes)}\n{WebUtility.HtmlEncode(product.ProductUrl)}", logger);
     }
 
-    private async Task SendProductInactiveAsync(WatchedProductDto product, ILambdaLogger logger)
+    private async Task QueueProductInactiveNotificationAsync(WatchedProductDto product, ILambdaLogger logger)
     {
         var productName = product.ProductName ?? "Оголошення OLX";
-        var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
-        await _telegramBotClient.SendMessageAsync(token, product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення більше неактивне.\n{WebUtility.HtmlEncode(product.ProductUrl)}", "HTML", true);
-        logger.LogInformation($"Telegram inactive-product notification completed for chat {product.ChatId}.");
+        await EnqueueNotificationAsync(product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення більше неактивне.\n{WebUtility.HtmlEncode(product.ProductUrl)}", logger);
     }
 
-    private async Task SendProductReactivatedAsync(
+    private async Task QueueProductReactivatedNotificationAsync(
         WatchedProductDto product,
         OlxProductDetailsDto actual,
         ILambdaLogger logger)
     {
         var productName = actual.Name ?? product.ProductName ?? "Оголошення OLX";
+        await EnqueueNotificationAsync(product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення знову активне.\n{WebUtility.HtmlEncode(product.ProductUrl)}", logger);
+    }
+
+    private async Task EnqueueNotificationAsync(string chatId, string text, ILambdaLogger logger)
+    {
+        var notification = new TelegramNotificationDto
+        {
+            NotificationId = Guid.NewGuid().ToString("N"),
+            ChatId = chatId,
+            Text = text,
+            ParseMode = "HTML",
+            DisableWebPagePreview = true
+        };
+        await _notificationOutbox.EnqueueAsync(notification, DateTimeOffset.UtcNow);
+        logger.LogInformation($"Queued Telegram notification {notification.NotificationId} for chat {chatId}.");
+    }
+
+    private async Task DeliverPendingNotificationsAsync(ILambdaLogger logger)
+    {
+        var notifications = await _notificationOutbox.GetPendingAsync(DateTimeOffset.UtcNow);
         var token = RequiredEnvironmentVariable("TELEGRAM_BOT_TOKEN");
-        await _telegramBotClient.SendMessageAsync(token, product.ChatId, $"<b>{WebUtility.HtmlEncode(productName)}</b>\nОголошення знову активне.\n{WebUtility.HtmlEncode(product.ProductUrl)}", "HTML", true);
-        logger.LogInformation($"Telegram reactivated-product notification completed for chat {product.ChatId}.");
+        foreach (var notification in notifications)
+        {
+            try
+            {
+                await _telegramBotClient.SendMessageAsync(token, notification.ChatId, notification.Text, notification.ParseMode, notification.DisableWebPagePreview);
+                await _notificationOutbox.MarkDeliveredAsync(notification.NotificationId);
+                logger.LogInformation($"Delivered Telegram notification {notification.NotificationId} to chat {notification.ChatId}.");
+            }
+            catch (Exception exception)
+            {
+                await _notificationOutbox.ScheduleRetryAsync(notification.NotificationId, DateTimeOffset.UtcNow.AddMinutes(5));
+                logger.LogError(exception, $"Unable to deliver Telegram notification {notification.NotificationId}.");
+                await SendErrorNotificationAsync($"Доставка Telegram-повідомлення {notification.NotificationId}", exception, logger);
+            }
+        }
     }
 
     private static Task SendErrorNotificationAsync(string errorContext, Exception exception, ILambdaLogger logger) =>

@@ -17,6 +17,7 @@ provider:
     STAGE: ${sls:stage}
     WATCHED_PRODUCTS_TABLE: ${self:service}-${sls:stage}-watched-products
     PRODUCT_PRICE_HISTORY_TABLE: ${self:service}-${sls:stage}-product-price-history
+    TELEGRAM_NOTIFICATION_OUTBOX_TABLE: ${self:service}-${sls:stage}-telegram-notification-outbox
     WATCHER_MAX_CONCURRENCY: 5
     TELEGRAM_BOT_TOKEN: ${ssm:/olx-watcher/${sls:stage}/telegram-bot-token}
     TELEGRAM_WEBHOOK_SECRET: ${ssm:/olx-watcher/${sls:stage}/telegram-webhook-secret}
@@ -26,12 +27,18 @@ provider:
         - Effect: Allow
           Action:
             - dynamodb:PutItem
+            - dynamodb:DeleteItem
             - dynamodb:Query
             - dynamodb:Scan
             - dynamodb:UpdateItem
           Resource:
             - Fn::GetAtt: [WatchedProductsTable, Arn]
             - Fn::GetAtt: [ProductPriceHistoryTable, Arn]
+            - Fn::GetAtt: [TelegramNotificationOutboxTable, Arn]
+            - Fn::Join:
+                - ''
+                - - Fn::GetAtt: [TelegramNotificationOutboxTable, Arn]
+                  - /index/StatusNextAttemptAtIndex
 
 package:
   individually: true
@@ -119,3 +126,27 @@ resources:
             KeyType: HASH
           - AttributeName: changeDate
             KeyType: RANGE
+    TelegramNotificationOutboxTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-telegram-notification-outbox
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: notificationId
+            AttributeType: S
+          - AttributeName: status
+            AttributeType: S
+          - AttributeName: nextAttemptAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: notificationId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: StatusNextAttemptAtIndex
+            KeySchema:
+              - AttributeName: status
+                KeyType: HASH
+              - AttributeName: nextAttemptAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
