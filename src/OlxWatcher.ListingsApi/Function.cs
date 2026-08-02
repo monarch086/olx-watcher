@@ -19,7 +19,7 @@ namespace OlxWatcher.ListingsApi;
 public sealed class Function
 {
     private const string HelpMessage = "Надішліть /watch і URL товару з OLX або ID оголошення, щоб почати відстеження. Також можна просто надіслати URL або ID. Використовуйте /list, щоб переглянути товари.";
-    private const int MaxActiveProductsPerUser = 20;
+    private const int MaxProductsPerUser = 20;
     private static readonly HttpClient TelegramClient = new();
     private static readonly HttpClient OlxPageClient = CreateOlxPageClient();
     private readonly IAmazonDynamoDB _dynamoDb;
@@ -118,10 +118,10 @@ public sealed class Function
             return "Ви вже відстежуєте це оголошення.";
         }
 
-        if (await GetActiveProductCountAsync(chatId) >= MaxActiveProductsPerUser)
+        if (await GetProductCountAsync(chatId) >= MaxProductsPerUser)
         {
-            logger.LogInformation($"Telegram chat {chatId} has reached the active watched-products limit.");
-            return $"Ви можете відстежувати не більше {MaxActiveProductsPerUser} активних оголошень.";
+            logger.LogInformation($"Telegram chat {chatId} has reached the watched-products limit.");
+            return $"Ви можете відстежувати не більше {MaxProductsPerUser} оголошень.";
         }
 
         try
@@ -185,7 +185,7 @@ public sealed class Function
         return false;
     }
 
-    private async Task<int> GetActiveProductCountAsync(string chatId)
+    private async Task<int> GetProductCountAsync(string chatId)
     {
         Dictionary<string, AttributeValue>? lastEvaluatedKey = null;
         var count = 0;
@@ -205,7 +205,7 @@ public sealed class Function
             count += response.Items
                 .Select(WatchedProductDynamoMapper.ToWatchedProduct)
                 .OfType<WatchedProductDto>()
-                .Count(product => product.IsActive is not false);
+                .Count();
             lastEvaluatedKey = response.LastEvaluatedKey;
         }
         while (lastEvaluatedKey is { Count: > 0 });
