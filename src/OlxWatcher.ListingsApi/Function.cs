@@ -138,7 +138,7 @@ public sealed class Function
                     ["addedAt"] = new() { S = DateTimeOffset.UtcNow.ToString("O") },
                     ["productName"] = NullableString(product.Name),
                     ["productPrice"] = NullableString(product.Price),
-                    ["isActive"] = new() { NULL = true }
+                    ["isActive"] = new() { BOOL = true }
                 }
             });
         }
