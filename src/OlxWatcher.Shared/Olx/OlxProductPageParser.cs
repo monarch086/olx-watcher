@@ -53,11 +53,11 @@ public static class OlxProductPageParser
             var canonicalProductId = CanonicalProductIdRegex.Match(html) is { Success: true } canonicalMatch
                 ? canonicalMatch.Groups["id"].Value
                 : null;
-            if (IsInactiveListingPage(html) && canonicalProductId is not null)
+            if (IsInactiveListingPage(html))
             {
                 return new OlxProductDetailsDto
                 {
-                    ProductId = canonicalProductId,
+                    ProductId = canonicalProductId ?? fallbackProductId,
                     IsActive = false
                 };
             }
