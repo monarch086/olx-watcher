@@ -127,10 +127,11 @@ public sealed class WatchCommandHandler
             return "Ви вже відстежуєте це оголошення.";
         }
 
-        if (watchedProducts.Count >= MaxProductsPerUser)
+        var activeProductCount = watchedProducts.Count(watchedProduct => watchedProduct.IsActive is not false);
+        if (activeProductCount >= MaxProductsPerUser)
         {
-            logger.LogInformation($"Telegram chat {chatId} has reached the watched-products limit.");
-            return $"Ви можете відстежувати не більше {MaxProductsPerUser} оголошень.";
+            logger.LogInformation($"Telegram chat {chatId} has reached the active watched-products limit.");
+            return $"Ви можете відстежувати не більше {MaxProductsPerUser} активних оголошень.";
         }
 
         try
