@@ -75,6 +75,13 @@ public sealed class WatchedProductRepository
             }
         }, cancellationToken);
 
+    public Task DeleteAsync(WatchedProductDto product, CancellationToken cancellationToken = default) =>
+        _dynamoDb.DeleteItemAsync(new DeleteItemRequest
+        {
+            TableName = _tableName,
+            Key = WatchedProductDynamoMapper.CreateKey(product)
+        }, cancellationToken);
+
     public Task UpdateFromOlxAsync(WatchedProductDto product, OlxProductDetailsDto actual, DateTimeOffset checkedAt, CancellationToken cancellationToken = default)
     {
         var assignments = new List<string> { "isActive = :isActive", "lastCheckedAt = :lastCheckedAt" };

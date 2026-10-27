@@ -17,7 +17,7 @@ namespace OlxWatcher.ListingsApi;
 
 public sealed class WatchCommandHandler
 {
-    private const string HelpMessage = "Надішліть /watch і URL товару з OLX або ID оголошення, щоб почати відстеження. Також можна просто надіслати URL або ID. Використовуйте /list, щоб переглянути товари.";
+    private const string HelpMessage = "Надішліть /watch і URL товару з OLX або ID оголошення, щоб почати відстеження. Також можна просто надіслати URL або ID. Використовуйте /list, щоб переглянути товари, та /remove <ID>, щоб припинити відстеження.";
     private const int MaxProductsPerUser = 20;
     private static readonly HttpClient TelegramClient = new();
     private static readonly HttpClient OlxPageClient = CreateOlxPageClient();
@@ -101,6 +101,7 @@ public sealed class WatchCommandHandler
         {
             "/watch" => await WatchAsync(chatId, parts.ElementAtOrDefault(1), logger),
             "/list" => await ListAsync(chatId, logger),
+            "/remove" or "/unwatch" => await RemoveAsync(chatId, parts.ElementAtOrDefault(1), logger),
             "/start" or "/help" => HelpMessage,
             _ when IsProductReference(trimmedText) => await WatchAsync(chatId, trimmedText, logger),
             _ => HelpMessage
@@ -162,7 +163,27 @@ public sealed class WatchCommandHandler
             productPrice,
             product.Url,
             logger);
-        return $"Відстежую:\n{productName}\nЦіна: {productPrice}\n{product.Url}";
+        return $"Відстежую:\n{productName}\nID: {product.Id}\nЦіна: {productPrice}\n{product.Url}";
+    }
+
+    private async Task<string> RemoveAsync(string chatId, string? productId, ILambdaLogger logger)
+    {
+        var trackingId = productId?.Trim();
+        if (string.IsNullOrEmpty(trackingId) || !OlxProductPageParser.IsValidProductId(trackingId))
+        {
+            return "Вкажіть числовий ID товару: /remove <ID>.";
+        }
+
+        var product = (await _watchedProducts.GetByChatIdAsync(chatId))
+            .SingleOrDefault(watchedProduct => string.Equals(watchedProduct.ProductId, trackingId, StringComparison.Ordinal));
+        if (product is null)
+        {
+            return "Товар з таким ID не знайдено серед ваших відстежуваних.";
+        }
+
+        await _watchedProducts.DeleteAsync(product);
+        logger.LogInformation($"Removed watched product ID {trackingId} for Telegram chat {chatId}.");
+        return $"Припинив відстеження:\n{product.ProductName ?? "Без назви"}\nID: {trackingId}";
     }
 
     private async Task<string> ListAsync(string chatId, ILambdaLogger logger)
@@ -187,6 +208,7 @@ public sealed class WatchCommandHandler
             "\n\n",
             products.Select((product, index) =>
                 $"{index + 1}. {product.ProductName ?? "Без назви"}\n"
+                + $"ID: {product.ProductId ?? "не вказано"}\n"
                 + (product.IsActive is false ? "⚠️ Неактивне\n" : string.Empty)
                 + $"Ціна: {(product.ProductPrice is null ? "не вказано" : PriceFormatter.FormatUah(product.ProductPrice))}\n"
                 + product.ProductUrl));
